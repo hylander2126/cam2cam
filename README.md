@@ -1,56 +1,46 @@
-# multicam_icp_calib
+# cam2cam - Multicam ICP Calibration
 
 Targetless extrinsic calibration for two overlapping RGB-D cameras, built as a
 standalone Python tool with optional ROS 2 integration.
 
-`multicam_icp_calib` estimates camera 2's pose relative to an already-calibrated
-camera 1 by registering their point clouds. It uses Open3D, FPFH descriptors,
-global RANSAC (with Fast Global Registration as a fallback), and multiscale
-point-to-plane or colored ICP. It does not require a calibration board, GPU,
-Torch, or a learned model.
+## Motivation
+Do you ever look at your robotic system setup and think *'huh, I think I need another camera somewhere in the mix'*. Personallly, I've either wanted to increase the overall FOV of my perception stack, or improve visibility of some semi-occluded object in the environment. 
+
+### What's the alternative?
+In order to make depth/stereo cameras useful, one often has to perform some handeye calibration to accurately locate it in 3D space with respect to world coordinates. Handeye calibration has come a long way (see [MoveIt GUI](https://moveit.picknik.ai/humble/doc/examples/hand_eye_calibration/hand_eye_calibration_tutorial.html)), but generally requires several viewpoints, an ArUco/ChArUco fiducial marker board fixed to the robot, which may require custom fixturing to the end effector, etc. 
+
+**You get the point.** And that's just with one camera. Adding a second camera adds further complexity, because now you have two sources of truth fighting and representing the same workspace.
+
+### Good news: there's a better way.
+
+`cam2cam` estimates camera 2's pose relative to an already-calibrated camera 1 by registering their point clouds. It uses Open3D, FPFH descriptors, global RANSAC (with Fast Global Registration as a fallback), and multiscale
+point-to-plane or colored ICP. It does not require a calibration board, GPU, Torch, or a learned model.
+
+Under the hood, we take the two point clouds — camera 1's *trusted view of the scene* and camera 2's view of roughly the same scene and try to match them up. For each cloud, we pick out points with distinctive local shape and assign it a "fingerprint" (FPFH). Then, we look for a close point-to-point fingerprint match between clouds. With enough matches, we can guess a rough pose that lines them up (RANSAC, with Fast Global Registration as a backup strategy). Finally, we nudge that rough alignment into a tight fit by repeatedly snapping the two clouds' surfaces together at increasing detail (ICP), which gives the precise pose of camera 2 relative to camera 1.
+
+---
 
 The project is intentionally split into two layers:
 
 ```text
-multicam_icp_calib/                         Python core, acquisition, GUI, API
-└── ros2_templates/multicam_icp_calib_bringup/
-                                             Optional ROS 2 launch integration
+icp_calib/       # Python core, acquisition, GUI, API
+|
+└── ros2_templates/ # (recommended)
+    └── icp_calib_bringup/ # ROS2 launch integration
 ```
 
-Use the Python package on its own with Open3D point clouds or direct Intel
-RealSense capture. Use the ROS 2 integration when the cameras already belong to
+Use the Python package on its own with Open3D point clouds or direct Intel RealSense capture. OR **(recommended)** use the ROS 2 integration when the cameras already belong to
 a robot TF tree and publish `sensor_msgs/msg/PointCloud2`.
 
 ## Project status and validation scope
 
-This is an early-stage engineering tool released for inspection, adaptation,
-and testing. It is not a metrology-certified calibration system and does not
-provide a formal accuracy guarantee.
+This is an early-stage personal engineering tool I'm releasing so others can contribute, use, and adapt for their own usage. It is **not** a certified calibration system and does not provide a formal accuracy guarantee. 
 
-The implementation targets a Linux/ROS 2 workflow using Intel RealSense
-D400-series RGB-D cameras. The capture code contains explicit handling for the
-RealSense D405's short working range and avoids depth-to-color resampling that
-can introduce model-specific artifacts. The exact camera models and firmware
-used during development have not yet been recorded in this repository. The
-repository also does not yet contain a controlled benchmark, ground-truth
-accuracy study, or a complete camera/firmware compatibility matrix. Accordingly:
+**USE WITH CAUTION, ESPECIALLY IF YOU ARE RELYING ON PRECISE, SAFE ROBOT MOTIONS BASED ON THE OUTPUTS OF THIS TOOL.**
 
-- direct hardware capture should currently be considered Intel
-  RealSense-specific;
-- other RGB-D cameras may be used through Open3D point clouds or ROS 2
-  `PointCloud2`, but have not been validated here;
-- the D405-oriented `0.07–1.00 m` depth default is a starting point, not a
-  statement of guaranteed sensor performance;
-- ROS frame names, topics, and RealSense launch arguments vary by wrapper
-  release and robot stack—inspect your running system instead of copying names
-  blindly;
-- ICP fitness and inlier RMSE describe agreement between the captured clouds;
-  they are not independent proof of extrinsic accuracy.
+This tool targets Linux + ROS 2 workflow, and has been designed to accommodate various Intel RealSense RGB-D cameras. Use with other depth camera vendors remains untested.
 
-The current development environment is Ubuntu 24.04, Python 3.12, and ROS 2
-Jazzy. The package metadata allows Python 3.10 and newer, but the repository
-does not yet include continuous-integration coverage across every supported
-Python or ROS release.
+See [Testing notes](#testing-notes) at the end of this README for details on validation scope.
 
 If you use a different camera model, ROS distribution, operating system, or
 RealSense firmware version, treat that as a new validation configuration and
@@ -547,6 +537,24 @@ datasets, accuracy comparisons against target-based methods, ROS distribution
 reports, improved synchronization, automated tests, and documentation fixes.
 Please avoid reporting only “it worked”; include the sensor models, stream
 settings, working distance, scene, software versions, and validation method.
+
+## Testing notes
+
+Developed and tested on Ubuntu 24.04, Python 3.12, and ROS 2 Jazzy with Intel
+RealSense D400-series cameras. Python 3.10+ is allowed by package metadata but
+not CI-tested. Only the D405 has explicit tuning (short-range handling, no
+depth-to-color resampling); other camera models/firmware used in development
+haven't been recorded, and there's no benchmark, ground-truth study, or
+compatibility matrix yet. In practice:
+
+- Direct hardware capture is Intel RealSense-specific for now.
+- Other RGB-D cameras can be used via Open3D or ROS 2 `PointCloud2`, but are
+  untested here.
+- The `0.07–1.00 m` D405 depth default is a starting point, not a guarantee.
+- ROS frame/topic/launch-arg names vary by wrapper and robot stack—verify
+  against your running system.
+- ICP fitness/RMSE reflect cloud agreement only, not proof of extrinsic
+  accuracy.
 
 ## License
 
