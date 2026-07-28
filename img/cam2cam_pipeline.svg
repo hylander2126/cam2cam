@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="430" viewBox="0 0 1200 430" role="img" aria-labelledby="title desc">
+  <title id="title">cam2cam calibration pipeline</title>
+  <desc id="desc">Two overlapping RGB-D camera point clouds are matched using FPFH, aligned coarsely with RANSAC, refined with ICP, and combined with camera 1's known pose to estimate camera 2's pose.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8fafc"/>
+      <stop offset="1" stop-color="#eef2ff"/>
+    </linearGradient>
+    <linearGradient id="cloud1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2563eb"/>
+      <stop offset="1" stop-color="#38bdf8"/>
+    </linearGradient>
+    <linearGradient id="cloud2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7c3aed"/>
+      <stop offset="1" stop-color="#c084fc"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#0f172a" flood-opacity=".10"/>
+    </filter>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+      <path d="M0,0 L9,4.5 L0,9 Z" fill="#64748b"/>
+    </marker>
+    <style>
+      .label { font: 700 18px Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; fill: #0f172a; }
+      .small { font: 500 14px Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; fill: #475569; }
+      .tiny { font: 600 12px Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; fill: #64748b; letter-spacing: .04em; }
+      .mono { font: 600 14px "SFMono-Regular", Consolas, "Liberation Mono", monospace; fill: #4338ca; }
+      .step { fill: white; stroke: #cbd5e1; stroke-width: 1.5; filter: url(#shadow); }
+      .arrow { fill: none; stroke: #64748b; stroke-width: 2.2; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect width="1200" height="430" rx="24" fill="url(#bg)"/>
+  <text x="50" y="50" class="tiny">TARGETLESS EXTRINSIC CALIBRATION</text>
+  <text x="50" y="82" class="label" style="font-size:25px">Use the scene itself as the calibration target</text>
+
+  <!-- Input cameras -->
+  <rect x="50" y="120" width="245" height="245" rx="18" class="step"/>
+  <text x="76" y="153" class="label">Overlapping views</text>
+  <g transform="translate(76 177)">
+    <rect x="0" y="5" width="58" height="42" rx="8" fill="#2563eb"/>
+    <circle cx="29" cy="26" r="12" fill="#dbeafe" stroke="#1e3a8a" stroke-width="4"/>
+    <path d="M58 15 L76 8 L76 44 L58 37 Z" fill="#1d4ed8"/>
+    <text x="90" y="23" class="small">Camera 1</text>
+    <text x="90" y="43" class="tiny" fill="#2563eb">TRUSTED POSE</text>
+  </g>
+  <g transform="translate(76 252)">
+    <rect x="0" y="5" width="58" height="42" rx="8" fill="#7c3aed"/>
+    <circle cx="29" cy="26" r="12" fill="#ede9fe" stroke="#4c1d95" stroke-width="4"/>
+    <path d="M58 15 L76 8 L76 44 L58 37 Z" fill="#6d28d9"/>
+    <text x="90" y="23" class="small">Camera 2</text>
+    <text x="90" y="43" class="tiny" fill="#7c3aed">POSE UNKNOWN</text>
+  </g>
+  <g opacity=".85">
+    <circle cx="103" cy="332" r="4" fill="#2563eb"/><circle cx="117" cy="326" r="3" fill="#38bdf8"/>
+    <circle cx="132" cy="337" r="4" fill="#2563eb"/><circle cx="149" cy="328" r="3" fill="#38bdf8"/>
+    <circle cx="165" cy="338" r="4" fill="#7c3aed"/><circle cx="181" cy="328" r="3" fill="#c084fc"/>
+    <circle cx="198" cy="337" r="4" fill="#7c3aed"/><circle cx="215" cy="326" r="3" fill="#c084fc"/>
+    <circle cx="230" cy="334" r="4" fill="#7c3aed"/>
+  </g>
+
+  <path d="M305 242 H350" class="arrow"/>
+
+  <!-- Feature matching -->
+  <rect x="365" y="155" width="205" height="175" rx="18" class="step"/>
+  <circle cx="405" cy="198" r="9" fill="#2563eb"/><circle cx="458" cy="211" r="7" fill="#38bdf8"/>
+  <circle cx="516" cy="190" r="9" fill="#7c3aed"/><circle cx="485" cy="250" r="7" fill="#c084fc"/>
+  <path d="M413 198 C446 174 483 176 507 190 M465 214 C476 226 479 235 482 243" fill="none" stroke="#94a3b8" stroke-width="2" stroke-dasharray="5 5"/>
+  <text x="390" y="285" class="label">Match shape</text>
+  <text x="390" y="309" class="small">FPFH “fingerprints”</text>
+
+  <path d="M580 242 H625" class="arrow"/>
+
+  <!-- Coarse -->
+  <rect x="640" y="155" width="205" height="175" rx="18" class="step"/>
+  <g transform="translate(690 182)">
+    <path d="M0 55 L52 12 L91 61 L45 94 Z" fill="none" stroke="url(#cloud1)" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M18 42 L70 0 L109 49 L63 82 Z" fill="none" stroke="url(#cloud2)" stroke-width="7" stroke-linejoin="round" opacity=".7"/>
+    <path d="M101 78 C120 59 120 36 107 21" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+  </g>
+  <text x="665" y="285" class="label">Find rough pose</text>
+  <text x="665" y="309" class="small">RANSAC / FGR</text>
+
+  <path d="M855 242 H900" class="arrow"/>
+
+  <!-- Fine -->
+  <rect x="915" y="120" width="235" height="245" rx="18" class="step"/>
+  <g transform="translate(958 160)">
+    <path d="M0 70 L57 21 L105 76 L52 121 Z" fill="none" stroke="#2563eb" stroke-width="9" stroke-linejoin="round"/>
+    <path d="M3 69 L60 20 L108 75 L55 120 Z" fill="none" stroke="#a855f7" stroke-width="5" stroke-linejoin="round" opacity=".85"/>
+    <circle cx="3" cy="69" r="5" fill="#2563eb"/><circle cx="60" cy="20" r="5" fill="#a855f7"/>
+    <circle cx="108" cy="75" r="5" fill="#a855f7"/><circle cx="55" cy="120" r="5" fill="#2563eb"/>
+  </g>
+  <text x="941" y="306" class="label">Refine + compose</text>
+  <text x="941" y="330" class="small">Multiscale ICP</text>
+  <text x="941" y="352" class="mono">T_base_camera2</text>
+
+  <text x="365" y="390" class="small">No calibration board · No learned model · No GPU required</text>
+</svg>
