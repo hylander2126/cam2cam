@@ -1,0 +1,116 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+
+# Python environments and packaging output
+.venv/
+venv/
+env/
+ENV/
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# ROS 2 / colcon output
+install/
+log/
+.colcon/
+ros2_ws/
+
+# CMake output
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+compile_commands.json
+
+# Local editor, OS, and agent state
+.vscode/
+.idea/
+.fleet/
+.DS_Store
+Thumbs.db
+*~
+*.swp
+*.swo
+.agents/
+.codex/
+
+# Environment files and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.crt
+*.cer
+credentials.*
+secrets.*
+*_credentials.*
+*_secrets.*
+
+# Local configuration that may contain device serials, hostnames, or paths
+config/local/
+config/private/
+local.yaml
+local.yml
+local.json
+*.local.yaml
+*.local.yml
+*.local.json
+
+# Captured sensor data and ROS bags can expose people, facilities, and geometry.
+# Public, intentionally scrubbed samples can still be added with `git add -f`.
+*.bag
+*.db3
+*.mcap
+*.pcd
+*.ply
+*.las
+*.laz
+*.npy
+*.npz
+captures/
+datasets/
+recordings/
+rosbag2_*/
+
+# Generated calibration results may expose the physical camera/robot layout.
+/camera_*_tf.launch.py
+/camera_*_dummy_tf.launch.py
+calibration_results/
+calibrations/private/
+*_transform.json
+*_transform.yaml
+*_transform.yml
+*_transform.csv
+*_transform.npy
+
+# Runtime logs, crash reports, and temporary files
+*.log
+*.trace
+*.prof
+*.pid
+*.tmp
+*.temp
+core
+core.*
+.cache/
+tmp/
+temp/

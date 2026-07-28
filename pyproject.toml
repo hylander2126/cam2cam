@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "multicam-icp-calib"
+version = "0.1.0"
+description = "CPU-only targetless calibration for overlapping RGB-D cameras"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+    "numpy>=1.23",
+    "open3d>=0.17",
+]
+
+[project.optional-dependencies]
+realsense = ["pyrealsense2>=2.54"]
+gui = ["ttkbootstrap>=1.10"]
+all = ["pyrealsense2>=2.54", "ttkbootstrap>=1.10"]
+
+[project.gui-scripts]
+multicam-icp-calib-gui = "multicam_icp_calib.gui:main"
+
+[tool.setuptools.packages.find]
+include = ["multicam_icp_calib*"]
