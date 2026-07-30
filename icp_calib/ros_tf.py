@@ -168,6 +168,23 @@ class LiveRosTf:
         )
         return _transform_to_matrix(stamped.transform)
 
+    def physical_link_ancestor(self, frame: str) -> str | None:
+        """Return the nearest ``*_link`` ancestor of a sensor/optical frame."""
+        import yaml
+
+        graph = yaml.safe_load(self._buffer.all_frames_as_yaml()) or {}
+        current = frame
+        visited: set[str] = set()
+        while current and current not in visited:
+            visited.add(current)
+            if current == "link" or current.endswith("_link"):
+                return current
+            details = graph.get(current)
+            if not isinstance(details, dict):
+                return None
+            current = str(details.get("parent", "")).strip()
+        return None
+
     def pointcloud_topics(self) -> list[str]:
         """Return currently advertised ROS PointCloud2 topic names."""
         expected_type = "sensor_msgs/msg/PointCloud2"

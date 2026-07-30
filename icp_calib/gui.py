@@ -17,7 +17,12 @@ try:
 except ImportError:  # The core calibration package remains usable without it.
     ttkb = None
 
-from .realsense import RealSenseDevice, capture_pair, list_devices
+from .realsense import (
+    RealSenseDevice,
+    capture_pair,
+    list_devices,
+    realsense_link_to_depth_optical,
+)
 from .registration import RegistrationConfig, RegistrationResult, calibrate
 from .transforms import (
     load_transform,
@@ -28,6 +33,59 @@ from .transforms import (
 )
 
 LOGGER = logging.getLogger(__name__)
+
+
+class _Tooltip:
+    """Small delayed tooltip that matches the application's dark palette."""
+
+    def __init__(self, widget: tk.Misc, text: str) -> None:
+        self.widget = widget
+        self.text = text
+        self._after_id: str | None = None
+        self._window: tk.Toplevel | None = None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
+
+    def _schedule(self, _event: object | None = None) -> None:
+        self._cancel()
+        self._after_id = self.widget.after(450, self._show)
+
+    def _cancel(self) -> None:
+        if self._after_id is not None:
+            self.widget.after_cancel(self._after_id)
+            self._after_id = None
+
+    def _show(self) -> None:
+        self._after_id = None
+        if self._window is not None:
+            return
+        window = tk.Toplevel(self.widget)
+        window.wm_overrideredirect(True)
+        window.attributes("-topmost", True)
+        x = self.widget.winfo_rootx() + 8
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 7
+        window.wm_geometry(f"+{x}+{y}")
+        tk.Label(
+            window,
+            text=self.text,
+            justify="left",
+            wraplength=390,
+            background="#172033",
+            foreground="#e5e7eb",
+            relief="solid",
+            borderwidth=1,
+            padx=10,
+            pady=7,
+            font=("TkDefaultFont", 9),
+        ).pack()
+        self._window = window
+
+    def _hide(self, _event: object | None = None) -> None:
+        self._cancel()
+        if self._window is not None:
+            self._window.destroy()
+            self._window = None
 
 
 class _OrbitPointCloudView(ttk.Frame):
@@ -179,6 +237,170 @@ class _OrbitPointCloudView(ttk.Frame):
         )
 
 
+class _FrameSceneView(ttk.Frame):
+    """Orbitable 3-D view of the base and two camera coordinate frames."""
+
+    def __init__(self, master: tk.Misc) -> None:
+        super().__init__(master)
+        self._frames: list[tuple[str, np.ndarray, bool]] = []
+        self._yaw = -0.65
+        self._pitch = 0.4
+        self._zoom = 1.0
+        self._frustum_axis = "x"
+        self._last_mouse = (0, 0)
+        self.canvas = tk.Canvas(
+            self,
+            height=300,
+            background="#111827",
+            highlightthickness=0,
+        )
+        self.canvas.pack(fill="both", expand=True)
+        self.canvas.bind("<Configure>", lambda _event: self._render())
+        self.canvas.bind("<ButtonPress-1>", self._start_drag)
+        self.canvas.bind("<B1-Motion>", self._drag)
+        self.canvas.bind("<MouseWheel>", self._mouse_wheel)
+        self.canvas.bind("<Button-4>", lambda _event: self._zoom_by(1.12))
+        self.canvas.bind("<Button-5>", lambda _event: self._zoom_by(1 / 1.12))
+        self.canvas.bind("<Double-Button-1>", lambda _event: self.reset())
+
+    def set_frames(
+        self,
+        base_name: str,
+        camera1_name: str,
+        T_base_cam1: np.ndarray,
+        camera2_name: str,
+        T_base_cam2: np.ndarray,
+    ) -> None:
+        self._frames = [
+            (base_name, np.eye(4), False),
+            (camera1_name, T_base_cam1.copy(), True),
+            (camera2_name, T_base_cam2.copy(), True),
+        ]
+        self._render()
+
+    def clear(self) -> None:
+        self._frames = []
+        self._render()
+
+    def set_frustum_axis(self, axis: str) -> None:
+        if axis not in {"x", "z"}:
+            raise ValueError("Frustum axis must be 'x' or 'z'")
+        self._frustum_axis = axis
+        self._render()
+
+    def _start_drag(self, event: tk.Event) -> None:
+        self._last_mouse = (event.x, event.y)
+
+    def _drag(self, event: tk.Event) -> None:
+        dx = event.x - self._last_mouse[0]
+        dy = event.y - self._last_mouse[1]
+        self._last_mouse = (event.x, event.y)
+        self._yaw -= dx * 0.009
+        self._pitch = float(np.clip(self._pitch + dy * 0.009, -1.52, 1.52))
+        self._render()
+
+    def _mouse_wheel(self, event: tk.Event) -> None:
+        self._zoom_by(1.12 if event.delta > 0 else 1 / 1.12)
+
+    def _zoom_by(self, factor: float) -> None:
+        self._zoom = float(np.clip(self._zoom * factor, 0.2, 8.0))
+        self._render()
+
+    def reset(self) -> None:
+        self._yaw = -0.65
+        self._pitch = 0.4
+        self._zoom = 1.0
+        self._render()
+
+    def _render(self) -> None:
+        self.canvas.delete("all")
+        width = max(self.canvas.winfo_width(), 100)
+        height = max(self.canvas.winfo_height(), 100)
+        if not self._frames:
+            self.canvas.create_text(
+                width / 2,
+                height / 2,
+                text="Run calibration to view the three frames",
+                fill="#94a3b8",
+            )
+            return
+
+        origins = np.array([frame[1][:3, 3] for frame in self._frames])
+        # The base is the common anchor and remains fixed at the center while
+        # the view orbits around it.
+        center = origins[0]
+        radius = max(
+            float(np.linalg.norm(origins - center, axis=1).max()),
+            0.35,
+        )
+        axis_length = max(0.12, radius * 0.18)
+        scale = min(width, height) * 0.38 / radius * self._zoom
+        cy, sy = np.cos(self._yaw), np.sin(self._yaw)
+        cp, sp = np.cos(self._pitch), np.sin(self._pitch)
+        view_rotation = np.array(
+            [
+                [cy, sy, 0],
+                [-sy * sp, cy * sp, cp],
+                [sy * cp, -cy * cp, sp],
+            ]
+        )
+
+        def project(points: np.ndarray) -> np.ndarray:
+            viewed = (points - center) @ view_rotation.T
+            return np.column_stack(
+                (width / 2 + viewed[:, 0] * scale, height / 2 - viewed[:, 1] * scale)
+            )
+
+        axis_colors = ("#ef4444", "#22c55e", "#3b82f6")
+        for name, transform, is_camera in self._frames:
+            origin = transform[:3, 3]
+            rotation = transform[:3, :3]
+            axis_ends = origin + rotation.T * axis_length
+            projected = project(np.vstack((origin, axis_ends)))
+            for index, color in enumerate(axis_colors):
+                self.canvas.create_line(
+                    *projected[0], *projected[index + 1], fill=color, width=3
+                )
+            if is_camera:
+                depth = axis_length * 1.6
+                if self._frustum_axis == "x":
+                    local_corners = np.array(
+                        [
+                            [depth, -0.65 * depth, -0.42 * depth],
+                            [depth, 0.65 * depth, -0.42 * depth],
+                            [depth, 0.65 * depth, 0.42 * depth],
+                            [depth, -0.65 * depth, 0.42 * depth],
+                        ]
+                    )
+                else:
+                    local_corners = np.array(
+                        [
+                            [-0.65 * depth, -0.42 * depth, depth],
+                            [0.65 * depth, -0.42 * depth, depth],
+                            [0.65 * depth, 0.42 * depth, depth],
+                            [-0.65 * depth, 0.42 * depth, depth],
+                        ]
+                    )
+                corners = local_corners @ rotation.T + origin
+                frustum = project(np.vstack((origin, corners)))
+                for corner in frustum[1:]:
+                    self.canvas.create_line(
+                        *frustum[0], *corner, fill="#cbd5e1", width=2
+                    )
+                loop = np.vstack((frustum[1:], frustum[1]))
+                self.canvas.create_line(
+                    *loop.flatten(), fill="#cbd5e1", width=2
+                )
+            self.canvas.create_text(
+                projected[0, 0] + 8,
+                projected[0, 1] - 9,
+                text=name,
+                fill="#f8fafc",
+                anchor="sw",
+                font=("TkDefaultFont", 9, "bold"),
+            )
+
+
 class CalibrationApp(ttk.Frame):
     """Small CPU-only calibration application."""
 
@@ -197,20 +419,28 @@ class CalibrationApp(ttk.Frame):
         self._devices: dict[str, RealSenseDevice] = {}
         self._events: queue.Queue[tuple[str, object]] = queue.Queue()
         self._result: RegistrationResult | None = None
+        self._T_base_cam1: np.ndarray | None = None
         self._T_base_cam2: np.ndarray | None = None
+        self._T_base_cam2_optical: np.ndarray | None = None
         self._pcd_cam1: o3d.geometry.PointCloud | None = None
         self._pcd_cam2: o3d.geometry.PointCloud | None = None
         self._preview_photos: tuple[tk.PhotoImage, tk.PhotoImage] | None = None
         self._ros_tf: object | None = None
         self._captured_from_ros_pair = False
+        self._operation_in_progress = False
         self._result_child_frame = "camera_2_depth_optical_frame"
 
         self.camera1_var = tk.StringVar()
         self.camera2_var = tk.StringVar()
         self.base_frame_var = tk.StringVar(value="base")
         self.cam1_frame_var = tk.StringVar(value="camera_1_depth_optical_frame")
+        self.cam1_manual_frame_var = tk.StringVar(value="camera_1_link")
         self.cam2_frame_var = tk.StringVar(value="camera_2_depth_optical_frame")
         self.transform_source_var = tk.StringVar(value="Manual / file")
+        self.manual_pose_target_var = tk.StringVar(
+            value="Camera body / link (X-forward)"
+        )
+        self.frustum_axis_var = tk.StringVar(value="X-forward")
         self.voxel_var = tk.StringVar(value="0.008")
         self.global_voxel_var = tk.StringVar(value="0.025")
         self.refinement_var = tk.StringVar(value="point_to_plane")
@@ -237,7 +467,6 @@ class CalibrationApp(ttk.Frame):
         self.initial_pose_vars = [
             tk.StringVar(value="0") for _ in range(6)
         ]
-        self._manual_transform_expanded = False
 
         self._configure_styles()
         self._build_header()
@@ -276,6 +505,25 @@ class CalibrationApp(ttk.Frame):
             "Section.TLabelframe.Label", font=("TkDefaultFont", 11, "bold")
         )
         style.configure("Primary.TButton", font=("TkDefaultFont", 10, "bold"))
+        style.configure(
+            "Segment.TButton",
+            padding=(18, 9),
+            relief="flat",
+            borderwidth=0,
+        )
+        style.configure(
+            "SegmentSelected.TButton",
+            padding=(18, 9),
+            relief="flat",
+            borderwidth=0,
+            font=("TkDefaultFont", 10, "bold"),
+            foreground="#ffffff",
+            background="#2563eb",
+        )
+        style.map(
+            "SegmentSelected.TButton",
+            background=[("active", "#1d4ed8")],
+        )
         style.configure("Status.TLabel", font=("TkDefaultFont", 9))
         style.configure("TNotebook", tabmargins=(3, 6, 3, 0))
         style.configure("TNotebook.Tab", padding=(18, 10))
@@ -315,6 +563,9 @@ class CalibrationApp(ttk.Frame):
             tab.columnconfigure(0, weight=1)
             self.notebook.add(tab, text=label)
         self._tab_result.rowconfigure(1, weight=1)
+        self._current_tab_index = 0
+        self._restoring_tab = False
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
     @staticmethod
     def _tab_intro(parent: tk.Misc, title: str, description: str) -> None:
@@ -372,15 +623,33 @@ class CalibrationApp(ttk.Frame):
         self._tab_intro(
             self._tab_transform,
             "Connect both camera trees",
-            "Recommended: run both ROS camera drivers and connect to their TF and clouds.",
+            "Choose live ROS 2 TF, or enter/import the known camera 1 transform.",
         )
+        source_selector = ttk.Frame(
+            self._tab_transform, padding=2, relief="solid", borderwidth=1
+        )
+        source_selector.grid(row=1, column=0, sticky="w", pady=(0, 12))
+        self._ros_source_button = ttk.Button(
+            source_selector,
+            text="Live ROS 2",
+            command=lambda: self._select_transform_source("Live ROS TF"),
+        )
+        self._ros_source_button.pack(side="left")
+        self._manual_source_button = ttk.Button(
+            source_selector,
+            text="Manual / import",
+            command=lambda: self._select_transform_source("Manual / file"),
+        )
+        self._manual_source_button.pack(side="left")
+
         ros = ttk.LabelFrame(
             self._tab_transform,
             text="Recommended  •  Live ROS 2 TF",
             padding=18,
             style="Section.TLabelframe",
         )
-        ros.grid(row=1, column=0, sticky="new")
+        self._ros_transform_frame = ros
+        ros.grid(row=2, column=0, sticky="new")
         ros.columnconfigure(1, weight=1)
         ros.columnconfigure(3, weight=1)
         ttk.Label(
@@ -446,7 +715,7 @@ class CalibrationApp(ttk.Frame):
         self.cam2_topic_combo.grid(
             row=4, column=1, sticky="ew", padx=(8, 18), pady=(10, 0)
         )
-        ttk.Label(ros, text="Camera 2 link frame").grid(
+        ttk.Label(ros, text="Camera 2 physical link (auto)").grid(
             row=4, column=2, sticky="w", pady=(10, 0)
         )
         self.cam2_link_combo = ttk.Combobox(
@@ -468,14 +737,6 @@ class CalibrationApp(ttk.Frame):
         ).grid(
             row=5, column=1, columnspan=3, sticky="ew", padx=(8, 0), pady=(10, 0)
         )
-        self.manual_toggle_button = ttk.Button(
-            self._tab_transform,
-            text="▸  Manual transform or import from file",
-            command=self._toggle_manual_transform,
-        )
-        self.manual_toggle_button.grid(
-            row=2, column=0, sticky="w", pady=(16, 0)
-        )
         frame = ttk.LabelFrame(
             self._tab_transform,
             text="Manual transform  (base ← camera 1)",
@@ -483,8 +744,7 @@ class CalibrationApp(ttk.Frame):
             style="Section.TLabelframe",
         )
         self._manual_transform_frame = frame
-        frame.grid(row=3, column=0, sticky="new", pady=(10, 0))
-        frame.grid_remove()
+        frame.grid(row=2, column=0, sticky="new")
         for column in range(8):
             frame.columnconfigure(column, weight=1 if column > 0 else 0)
 
@@ -520,55 +780,91 @@ class CalibrationApp(ttk.Frame):
         ttk.Entry(names, textvariable=self.base_frame_var).grid(
             row=0, column=1, sticky="ew", padx=(5, 12)
         )
-        ttk.Label(names, text="Camera 1 frame").grid(row=0, column=2, sticky="w")
-        ttk.Entry(names, textvariable=self.cam1_frame_var).grid(
+        ttk.Label(names, text="Camera 1 pose frame").grid(
+            row=0, column=2, sticky="w"
+        )
+        ttk.Entry(names, textvariable=self.cam1_manual_frame_var).grid(
             row=0, column=3, sticky="ew", padx=(5, 12)
         )
         ttk.Button(names, text="Import TF…", command=self.import_transform).grid(
             row=0, column=4
         )
-        ttk.Button(
+        ttk.Label(names, text="Pose targets").grid(
+            row=1, column=0, sticky="w", pady=(10, 0)
+        )
+        ttk.Combobox(
             names,
-            text="Use manual transform",
-            command=self._use_manual_transform,
-            style="Primary.TButton",
-        ).grid(row=0, column=5, padx=(8, 0))
+            textvariable=self.manual_pose_target_var,
+            values=(
+                "Camera body / link (X-forward)",
+                "Depth optical frame (Z-forward)",
+            ),
+            state="readonly",
+            width=31,
+        ).grid(
+            row=1,
+            column=1,
+            columnspan=3,
+            sticky="w",
+            padx=(5, 12),
+            pady=(10, 0),
+        )
+        ttk.Label(
+            names,
+            text="Body/link is recommended for ROS launch-file imports.",
+            foreground="#8795a8",
+        ).grid(row=1, column=4, sticky="w", pady=(10, 0))
+        ttk.Label(names, text="Camera 2 output link").grid(
+            row=2, column=0, sticky="w", pady=(10, 0)
+        )
+        ttk.Entry(names, textvariable=self.cam2_link_frame_var).grid(
+            row=2,
+            column=1,
+            columnspan=3,
+            sticky="ew",
+            padx=(5, 12),
+            pady=(10, 0),
+        )
+        self._show_transform_source()
 
-    def _toggle_manual_transform(self) -> None:
-        self._manual_transform_expanded = not self._manual_transform_expanded
-        if self._manual_transform_expanded:
-            self._manual_transform_frame.grid()
-            self.manual_toggle_button.configure(
-                text="▾  Manual transform or import from file"
-            )
-        else:
+    def _select_transform_source(self, source: str) -> None:
+        self.transform_source_var.set(source)
+        self._show_transform_source()
+
+    def _show_transform_source(self) -> None:
+        """Show only the selected transform panel without clearing its fields."""
+        if self.transform_source_var.get() == "Live ROS TF":
+            self._ros_source_button.configure(style="SegmentSelected.TButton")
+            self._manual_source_button.configure(style="Segment.TButton")
             self._manual_transform_frame.grid_remove()
-            self.manual_toggle_button.configure(
-                text="▸  Manual transform or import from file"
-            )
-
-    def _use_manual_transform(self) -> None:
-        try:
-            self._known_transform()
-        except ValueError as error:
-            messagebox.showerror("Invalid transform", str(error), parent=self)
-            return
-        self.transform_source_var.set("Manual / file")
-        self.status_var.set("Using the manually entered camera 1 transform.")
+            self._ros_transform_frame.grid()
+        else:
+            self._ros_source_button.configure(style="Segment.TButton")
+            self._manual_source_button.configure(style="SegmentSelected.TButton")
+            self._ros_transform_frame.grid_remove()
+            self._manual_transform_frame.grid()
 
     def _build_capture_settings(self) -> None:
         self._tab_intro(
             self._tab_capture,
             "Capture and validate the scene",
-            "Tune each depth range, capture once, then inspect both static clouds.",
+            "Capture when ready, then inspect the raw clouds before registration.",
         )
+        self._capture_settings_expanded = False
+        self.capture_settings_button = ttk.Button(
+            self._tab_capture,
+            text="▸  Capture settings",
+            command=self._toggle_capture_settings,
+        )
+        self.capture_settings_button.grid(row=1, column=0, sticky="w")
         frame = ttk.LabelFrame(
             self._tab_capture,
             text="Capture settings",
             padding=18,
             style="Section.TLabelframe",
         )
-        frame.grid(row=1, column=0, sticky="new")
+        self._capture_settings_frame = frame
+        frame.grid(row=2, column=0, sticky="new", pady=(10, 0))
         options = (
             ("Warm-up frames", self.warmup_var),
             ("Accumulated frames", self.accumulate_var),
@@ -598,6 +894,16 @@ class CalibrationApp(ttk.Frame):
         ttk.Entry(
             frame, textvariable=self.cam2_max_depth_var, width=8
         ).grid(row=1, column=5, pady=(12, 0))
+        frame.grid_remove()
+
+    def _toggle_capture_settings(self) -> None:
+        self._capture_settings_expanded = not self._capture_settings_expanded
+        if self._capture_settings_expanded:
+            self._capture_settings_frame.grid()
+            self.capture_settings_button.configure(text="▾  Capture settings")
+        else:
+            self._capture_settings_frame.grid_remove()
+            self.capture_settings_button.configure(text="▸  Capture settings")
 
     def _build_registration_section(self) -> None:
         self._tab_intro(
@@ -605,79 +911,153 @@ class CalibrationApp(ttk.Frame):
             "Align the captured point clouds",
             "Start globally, or constrain the search with an approximate pose.",
         )
-        frame = ttk.LabelFrame(
+        pose = ttk.LabelFrame(
             self._tab_registration,
-            text="Solver settings",
+            text="Registration strategy and initial pose",
             padding=18,
             style="Section.TLabelframe",
         )
-        frame.grid(row=1, column=0, sticky="new")
-        options = (
-            ("ICP voxel (m)", self.voxel_var),
-            ("Global voxel (m)", self.global_voxel_var),
-        )
-        for index, (label, variable) in enumerate(options):
-            ttk.Label(frame, text=label).grid(
-                row=0, column=index * 2, sticky="w",
-                padx=(0 if index == 0 else 18, 6),
-            )
-            ttk.Entry(frame, textvariable=variable, width=10).grid(
-                row=0, column=index * 2 + 1
-            )
-        ttk.Label(frame, text="Refinement").grid(
-            row=1, column=0, sticky="w", pady=(12, 0)
-        )
-        ttk.Combobox(
-            frame,
-            textvariable=self.refinement_var,
-            values=("point_to_plane", "colored"),
-            state="readonly",
-            width=19,
-        ).grid(row=1, column=1, sticky="w", pady=(12, 0))
-        ttk.Label(frame, text="Registration mode").grid(
-            row=2, column=0, sticky="w", pady=(12, 0)
-        )
-        ttk.Combobox(
-            frame,
+        pose.grid(row=1, column=0, sticky="new")
+        mode_label = ttk.Label(pose, text="Registration mode")
+        mode_label.grid(row=0, column=0, sticky="w")
+        mode_combo = ttk.Combobox(
+            pose,
             textvariable=self.registration_mode_var,
             values=("FPFH global + ICP", "Approximate pose + ICP"),
             state="readonly",
             width=24,
-        ).grid(row=2, column=1, columnspan=2, sticky="w", pady=(12, 0))
-        ttk.Label(frame, text="Approx. camera 2 XYZ (m)").grid(
-            row=3, column=0, sticky="w", pady=(12, 0)
         )
+        mode_combo.grid(row=0, column=1, columnspan=2, sticky="w", padx=(8, 0))
+        mode_tip = (
+            "FPFH searches broadly and is the safest default when the pose is "
+            "unknown. Approximate pose + ICP is faster but needs a close guess.\n\n"
+            "If calibration fails: verify cloud overlap, improve the pose, or "
+            "switch back to FPFH global + ICP."
+        )
+        _Tooltip(mode_label, mode_tip)
+        _Tooltip(mode_combo, mode_tip)
+
+        xyz_label = ttk.Label(pose, text="Approx. camera 2 XYZ (m)")
+        xyz_label.grid(row=1, column=0, sticky="w", pady=(12, 0))
+        xyz_tip = (
+            "Camera 2 body/link position in the base frame, in meters. These "
+            "values seed Approximate pose + ICP and always drive the 3-D preview.\n\n"
+            "If calibration fails: estimate the physical camera separation; "
+            "even a rough position can prevent convergence on the wrong surface."
+        )
+        _Tooltip(xyz_label, xyz_tip)
         for index, label in enumerate(("X", "Y", "Z")):
-            ttk.Label(frame, text=label).grid(
-                row=3, column=index * 2 + 1, pady=(12, 0)
+            axis_label = ttk.Label(pose, text=label)
+            axis_label.grid(row=1, column=index * 2 + 1, pady=(12, 0))
+            entry = ttk.Entry(
+                pose, textvariable=self.initial_pose_vars[index], width=8
             )
-            ttk.Entry(
-                frame, textvariable=self.initial_pose_vars[index], width=8
-            ).grid(row=3, column=index * 2 + 2, pady=(12, 0))
-        ttk.Label(frame, text="Approx. roll/pitch/yaw (deg)").grid(
-            row=4, column=0, sticky="w", pady=(12, 0)
+            entry.grid(row=1, column=index * 2 + 2, pady=(12, 0))
+            _Tooltip(axis_label, xyz_tip)
+            _Tooltip(entry, xyz_tip)
+
+        rpy_label = ttk.Label(pose, text="Approx. roll/pitch/yaw (deg)")
+        rpy_label.grid(row=2, column=0, sticky="w", pady=(12, 0))
+        rpy_tip = (
+            "Camera 2 body/link orientation in the base frame, using fixed-axis "
+            "roll, pitch, yaw in degrees.\n\n"
+            "If calibration flips or fails: correct the rough orientation and "
+            "confirm it in Preview initial pose in 3D."
         )
+        _Tooltip(rpy_label, rpy_tip)
         for index, label in enumerate(("R", "P", "Y")):
-            ttk.Label(frame, text=label).grid(
-                row=4, column=index * 2 + 1, pady=(12, 0)
+            axis_label = ttk.Label(pose, text=label)
+            axis_label.grid(row=2, column=index * 2 + 1, pady=(12, 0))
+            entry = ttk.Entry(
+                pose, textvariable=self.initial_pose_vars[index + 3], width=8
             )
-            ttk.Entry(
-                frame, textvariable=self.initial_pose_vars[index + 3], width=8
-            ).grid(row=4, column=index * 2 + 2, pady=(12, 0))
+            entry.grid(row=2, column=index * 2 + 2, pady=(12, 0))
+            _Tooltip(axis_label, rpy_tip)
+            _Tooltip(entry, rpy_tip)
+
+        self._solver_settings_expanded = False
+        self.solver_settings_button = ttk.Button(
+            self._tab_registration,
+            text="▸  Advanced solver settings",
+            command=self._toggle_solver_settings,
+        )
+        self.solver_settings_button.grid(
+            row=2, column=0, sticky="w", pady=(12, 0)
+        )
+        solver = ttk.LabelFrame(
+            self._tab_registration,
+            text="Advanced solver settings",
+            padding=18,
+            style="Section.TLabelframe",
+        )
+        self._solver_settings_frame = solver
+        solver.grid(row=3, column=0, sticky="new", pady=(10, 0))
+
+        icp_label = ttk.Label(solver, text="ICP voxel (m)")
+        icp_label.grid(row=0, column=0, sticky="w")
+        icp_entry = ttk.Entry(solver, textvariable=self.voxel_var, width=10)
+        icp_entry.grid(row=0, column=1, padx=(6, 18))
+        icp_tip = (
+            "Downsampling size used during final ICP refinement. Smaller values "
+            "preserve detail but increase runtime and noise sensitivity.\n\n"
+            "If refinement is noisy: increase this slightly. If stable but "
+            "imprecise: decrease it cautiously."
+        )
+        _Tooltip(icp_label, icp_tip)
+        _Tooltip(icp_entry, icp_tip)
+
+        global_label = ttk.Label(solver, text="Global voxel (m)")
+        global_label.grid(row=0, column=2, sticky="w")
+        global_entry = ttk.Entry(
+            solver, textvariable=self.global_voxel_var, width=10
+        )
+        global_entry.grid(row=0, column=3, padx=(6, 0))
+        global_tip = (
+            "Feature scale used by FPFH global registration. Normally larger "
+            "than the ICP voxel size.\n\n"
+            "If no global alignment is found: increase it moderately. If large "
+            "repeated structures mismatch: reduce it or supply a pose."
+        )
+        _Tooltip(global_label, global_tip)
+        _Tooltip(global_entry, global_tip)
+
+        refinement_label = ttk.Label(solver, text="Refinement")
+        refinement_label.grid(row=1, column=0, sticky="w", pady=(12, 0))
+        refinement_combo = ttk.Combobox(
+            solver,
+            textvariable=self.refinement_var,
+            values=("point_to_plane", "colored"),
+            state="readonly",
+            width=19,
+        )
+        refinement_combo.grid(
+            row=1, column=1, columnspan=3, sticky="w", padx=(6, 0), pady=(12, 0)
+        )
+        refinement_tip = (
+            "Point-to-plane is the robust geometric default. Colored refinement "
+            "also uses RGB and needs consistent lighting and exposure.\n\n"
+            "If colored ICP fails or drifts: switch to point_to_plane."
+        )
+        _Tooltip(refinement_label, refinement_tip)
+        _Tooltip(refinement_combo, refinement_tip)
+        solver.grid_remove()
+
+    def _toggle_solver_settings(self) -> None:
+        self._solver_settings_expanded = not self._solver_settings_expanded
+        if self._solver_settings_expanded:
+            self._solver_settings_frame.grid()
+            self.solver_settings_button.configure(
+                text="▾  Advanced solver settings"
+            )
+        else:
+            self._solver_settings_frame.grid_remove()
+            self.solver_settings_button.configure(
+                text="▸  Advanced solver settings"
+            )
 
     def _build_actions(self) -> None:
-        capture_actions = ttk.Frame(self._tab_capture)
-        capture_actions.grid(row=2, column=0, sticky="ew", pady=(14, 0))
-        self.go_button = ttk.Button(
-            capture_actions,
-            text="Capture streams",
-            command=self.start_calibration,
-            style="Primary.TButton",
-        )
-        self.go_button.grid(row=0, column=0)
-
         registration_actions = ttk.Frame(self._tab_registration)
-        registration_actions.grid(row=2, column=0, sticky="ew", pady=(14, 0))
+        registration_actions.grid(row=4, column=0, sticky="ew", pady=(14, 0))
         self.recalculate_button = ttk.Button(
             registration_actions,
             text="Run calibration",
@@ -686,9 +1066,24 @@ class CalibrationApp(ttk.Frame):
             style="Primary.TButton",
         )
         self.recalculate_button.grid(row=0, column=0)
+        self.preview_guess_button = ttk.Button(
+            registration_actions,
+            text="Preview initial pose in 3D",
+            command=lambda: self._open_frame_scene("guess"),
+        )
+        self.preview_guess_button.grid(row=0, column=1, padx=(8, 0))
+        self.view_overlay_button = ttk.Button(
+            registration_actions,
+            text="Inspect registered overlay",
+            command=lambda: self._open_cloud_viewer("overlay"),
+            state="disabled",
+        )
+        self.view_overlay_button.grid(row=0, column=2, padx=(8, 0))
 
         result_actions = ttk.Frame(self._tab_result)
-        result_actions.grid(row=2, column=0, sticky="e", pady=(14, 0))
+        result_actions.grid(
+            row=2, column=0, columnspan=2, sticky="e", pady=(10, 0)
+        )
         self.save_button = ttk.Button(
             result_actions,
             text="Export data…",
@@ -704,6 +1099,13 @@ class CalibrationApp(ttk.Frame):
             style="Primary.TButton",
         )
         self.save_launch_button.pack(side="right", padx=(0, 8))
+        self.open_result_scene_button = ttk.Button(
+            result_actions,
+            text="Open 3D frame view",
+            command=lambda: self._open_frame_scene("result"),
+            state="disabled",
+        )
+        self.open_result_scene_button.pack(side="right", padx=(0, 8))
 
         footer = ttk.Frame(self, padding=(2, 12, 2, 0), style="App.TFrame")
         footer.grid(row=2, column=0, sticky="ew")
@@ -714,17 +1116,83 @@ class CalibrationApp(ttk.Frame):
             style="Status.TLabel",
         ).grid(row=0, column=0, sticky="w")
         self.progress = ttk.Progressbar(footer, mode="indeterminate", length=180)
-        self.progress.grid(row=0, column=1, sticky="e", padx=(12, 0))
+        self.progress.grid(row=0, column=1, sticky="e", padx=(12, 16))
+        self.back_button = ttk.Button(
+            footer, text="← Back", command=lambda: self._move_tab(-1)
+        )
+        self.back_button.grid(row=0, column=2)
+        self.next_button = ttk.Button(
+            footer,
+            text="Next →",
+            command=lambda: self._move_tab(1),
+            style="Primary.TButton",
+        )
+        self.next_button.grid(row=0, column=3, padx=(8, 0))
+        self.after_idle(self._update_tab_navigation)
+
+    def _move_tab(self, offset: int) -> None:
+        tabs = self.notebook.tabs()
+        current = self.notebook.index(self.notebook.select())
+        target = max(0, min(current + offset, len(tabs) - 1))
+        self.notebook.select(tabs[target])
+
+    def _on_tab_changed(self, _event: object | None = None) -> None:
+        selected = self.notebook.index(self.notebook.select())
+        if self._restoring_tab:
+            self._restoring_tab = False
+            self._current_tab_index = selected
+            self._update_tab_navigation()
+            return
+        if (
+            self._current_tab_index == 1
+            and selected != 1
+            and self.transform_source_var.get() == "Manual / file"
+        ):
+            try:
+                self._known_transform()
+            except ValueError as error:
+                self._restoring_tab = True
+                self.notebook.select(self._tab_transform)
+                messagebox.showerror("Invalid transform", str(error), parent=self)
+                return
+            self.status_var.set("Manual camera 1 transform accepted.")
+        self._current_tab_index = selected
+        self._update_tab_navigation()
+
+    def _update_tab_navigation(self, _event: object | None = None) -> None:
+        if not hasattr(self, "back_button"):
+            return
+        current = self.notebook.index(self.notebook.select())
+        last = len(self.notebook.tabs()) - 1
+        self.back_button.configure(state="disabled" if current == 0 else "normal")
+        self.next_button.configure(state="disabled" if current == last else "normal")
 
     def _build_previews(self) -> None:
+        controls = ttk.Frame(self._tab_capture)
+        controls.grid(row=3, column=0, sticky="w", pady=(14, 0))
+        self.capture_button = ttk.Button(
+            controls,
+            text="Capture streams",
+            command=self.start_calibration,
+            style="Primary.TButton",
+        )
+        self.capture_button.grid(row=0, column=0, padx=(0, 6))
+        self.view_3d_button = ttk.Button(
+            controls,
+            text="Inspect both clouds in 3D",
+            command=self._open_interactive_3d_viewer,
+            state="disabled",
+        )
+        self.view_3d_button.grid(row=0, column=1)
+
         frame = ttk.LabelFrame(
             self._tab_capture,
             text="Captured views",
             padding=14,
             style="Section.TLabelframe",
         )
-        frame.grid(row=3, column=0, sticky="nsew", pady=(14, 0))
-        self._tab_capture.rowconfigure(3, weight=1)
+        frame.grid(row=4, column=0, sticky="nsew", pady=(10, 0))
+        self._tab_capture.rowconfigure(4, weight=1)
         frame.columnconfigure(0, weight=1)
         frame.columnconfigure(1, weight=1)
         self.preview1 = ttk.Label(
@@ -735,36 +1203,66 @@ class CalibrationApp(ttk.Frame):
         )
         self.preview1.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
         self.preview2.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
-        controls = ttk.Frame(frame)
-        controls.grid(row=1, column=0, columnspan=2, pady=(7, 0))
-        self.view_overlay_button = ttk.Button(
-            controls,
-            text="Inspect registered overlay",
-            command=lambda: self._open_cloud_viewer("overlay"),
-            state="disabled",
-        )
-        self.view_overlay_button.grid(row=0, column=0, padx=3)
-        self.view_3d_button = ttk.Button(
-            controls,
-            text="Inspect both clouds in 3D",
-            command=self._open_interactive_3d_viewer,
-            state="disabled",
-        )
-        self.view_3d_button.grid(row=0, column=1, padx=3)
 
     def _build_output(self) -> None:
+        self._tab_result.columnconfigure(0, weight=1, uniform="result")
+        self._tab_result.columnconfigure(1, weight=1, uniform="result")
         self._tab_intro(
             self._tab_result,
             "Calibration result",
             "Review quality metrics and export the base-to-camera-2 transform.",
         )
+        self._tab_result.grid_slaves(row=0)[0].grid_configure(columnspan=2)
+        scene_frame = ttk.LabelFrame(
+            self._tab_result,
+            text="Base and camera poses",
+            padding=10,
+            style="Section.TLabelframe",
+        )
+        scene_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 5))
+        scene_frame.columnconfigure(0, weight=1)
+        scene_frame.rowconfigure(0, weight=1)
+        self.frame_scene = _FrameSceneView(scene_frame)
+        self.frame_scene.grid(row=0, column=0, sticky="nsew")
+        legend = ttk.Frame(scene_frame)
+        legend.grid(row=1, column=0, pady=(7, 0))
+        ttk.Label(legend, text="X", foreground="#ef4444").pack(side="left")
+        ttk.Label(legend, text=" red   ").pack(side="left")
+        ttk.Label(legend, text="Y", foreground="#22c55e").pack(side="left")
+        ttk.Label(legend, text=" green   ").pack(side="left")
+        ttk.Label(legend, text="Z", foreground="#3b82f6").pack(side="left")
+        ttk.Label(legend, text=" blue  •  Default view is Z-up").pack(side="left")
+        frustum_controls = ttk.Frame(scene_frame)
+        frustum_controls.grid(row=2, column=0, pady=(6, 0))
+        ttk.Label(frustum_controls, text="Frustum forward:").pack(
+            side="left", padx=(0, 6)
+        )
+        self.frustum_x_button = ttk.Button(
+            frustum_controls,
+            text="X",
+            command=lambda: self._set_frustum_axis("x"),
+        )
+        self.frustum_x_button.pack(side="left")
+        self.frustum_z_button = ttk.Button(
+            frustum_controls,
+            text="Z",
+            command=lambda: self._set_frustum_axis("z"),
+        )
+        self.frustum_z_button.pack(side="left")
+        self._set_frustum_axis("x")
+        ttk.Label(
+            scene_frame,
+            text="Drag to orbit  •  Scroll to zoom  •  Double-click to reset",
+            foreground="#8795a8",
+        ).grid(row=3, column=0, pady=(3, 0))
+
         frame = ttk.LabelFrame(
             self._tab_result,
             text="Camera 2 transform",
             padding=14,
             style="Section.TLabelframe",
         )
-        frame.grid(row=1, column=0, sticky="nsew")
+        frame.grid(row=1, column=1, sticky="nsew", padx=(5, 0))
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(0, weight=1)
         self.output = tk.Text(frame, height=12, wrap="none", state="disabled")
@@ -784,6 +1282,161 @@ class CalibrationApp(ttk.Frame):
         scrollbar.grid(row=0, column=1, sticky="ns")
         self.output.configure(yscrollcommand=scrollbar.set)
 
+    def _set_frustum_axis(self, axis: str) -> None:
+        self.frustum_axis_var.set("X-forward" if axis == "x" else "Z-forward")
+        self.frame_scene.set_frustum_axis(axis)
+        self.frustum_x_button.configure(
+            style="SegmentSelected.TButton" if axis == "x" else "Segment.TButton"
+        )
+        self.frustum_z_button.configure(
+            style="SegmentSelected.TButton" if axis == "z" else "Segment.TButton"
+        )
+
+    def _guess_scene_context(
+        self,
+    ) -> tuple[str, str, np.ndarray, str, np.ndarray]:
+        """Resolve fixed scene data and camera 2's link-to-optical transform."""
+        base_name = self.base_frame_var.get().strip() or "base"
+        cam1_optical_name = (
+            self.cam1_frame_var.get().strip()
+            or "camera_1_depth_optical_frame"
+        )
+        cam2_optical_name = (
+            self.cam2_frame_var.get().strip()
+            or "camera_2_depth_optical_frame"
+        )
+        live_ros = self.transform_source_var.get() == "Live ROS TF"
+        if live_ros:
+            if self._ros_tf is None:
+                raise ValueError("Connect ROS TF before previewing live frames")
+            T_base_cam1_optical = self._ros_tf.lookup_matrix(  # type: ignore[attr-defined]
+                base_name, cam1_optical_name
+            )
+            T_link2_optical = self._ros_tf.lookup_matrix(  # type: ignore[attr-defined]
+                self.cam2_link_frame_var.get().strip(), cam2_optical_name
+            )
+        else:
+            T_base_cam1_pose = self._known_transform()
+            if (
+                self.manual_pose_target_var.get()
+                == "Camera body / link (X-forward)"
+            ):
+                T_link1_optical = realsense_link_to_depth_optical()
+                T_base_cam1_optical = (
+                    T_base_cam1_pose @ T_link1_optical
+                )
+            else:
+                T_base_cam1_optical = T_base_cam1_pose
+            T_link2_optical = realsense_link_to_depth_optical()
+        return (
+            base_name,
+            cam1_optical_name,
+            T_base_cam1_optical,
+            cam2_optical_name,
+            T_link2_optical,
+        )
+
+    def _open_frame_scene(self, mode: str) -> None:
+        """Open the shared labeled frame/frustum viewer."""
+        try:
+            if mode == "result":
+                if (
+                    self._T_base_cam1 is None
+                    or self._T_base_cam2_optical is None
+                ):
+                    raise ValueError("Run calibration before opening the result view")
+                context = (
+                    self.base_frame_var.get().strip() or "base",
+                    self.cam1_frame_var.get().strip() or "camera 1",
+                    self._T_base_cam1,
+                    self.cam2_frame_var.get().strip() or "camera 2",
+                    None,
+                )
+            else:
+                context = self._guess_scene_context()
+        except Exception as error:
+            messagebox.showerror("3-D frame view unavailable", str(error), parent=self)
+            return
+
+        window = tk.Toplevel(self)
+        window.title(
+            "Initial camera pose preview"
+            if mode == "guess"
+            else "Calibrated camera frames"
+        )
+        window.geometry("900x650")
+        window.minsize(680, 480)
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(0, weight=1)
+        scene = _FrameSceneView(window)
+        scene.grid(row=0, column=0, sticky="nsew", padx=14, pady=(14, 8))
+        scene.set_frustum_axis(
+            "x" if self.frustum_axis_var.get() == "X-forward" else "z"
+        )
+
+        controls = ttk.Frame(window)
+        controls.grid(row=1, column=0, pady=(0, 8))
+        ttk.Label(controls, text="X", foreground="#ef4444").pack(side="left")
+        ttk.Label(controls, text=" red   ").pack(side="left")
+        ttk.Label(controls, text="Y", foreground="#22c55e").pack(side="left")
+        ttk.Label(controls, text=" green   ").pack(side="left")
+        ttk.Label(controls, text="Z", foreground="#3b82f6").pack(side="left")
+        ttk.Label(controls, text=" blue  •  Frustum forward:").pack(side="left")
+        ttk.Button(
+            controls,
+            text="X",
+            command=lambda: (
+                self._set_frustum_axis("x"),
+                scene.set_frustum_axis("x"),
+            ),
+        ).pack(side="left", padx=(6, 2))
+        ttk.Button(
+            controls,
+            text="Z",
+            command=lambda: (
+                self._set_frustum_axis("z"),
+                scene.set_frustum_axis("z"),
+            ),
+        ).pack(side="left")
+        ttk.Label(
+            window,
+            text="Drag to orbit  •  Scroll to zoom  •  Double-click to reset",
+            foreground="#8795a8",
+        ).grid(row=2, column=0, pady=(0, 12))
+
+        base_name, cam1_name, T_base_cam1, cam2_name, T_link2_optical = context
+
+        def refresh_scene() -> None:
+            if not window.winfo_exists():
+                return
+            try:
+                if mode == "guess":
+                    values = [
+                        float(variable.get())
+                        for variable in self.initial_pose_vars
+                    ]
+                    T_base_cam2_link = matrix_from_translation_euler(
+                        values[:3], values[3:]
+                    )
+                    assert T_link2_optical is not None
+                    T_base_cam2 = T_base_cam2_link @ T_link2_optical
+                else:
+                    assert self._T_base_cam2_optical is not None
+                    T_base_cam2 = self._T_base_cam2_optical
+                scene.set_frames(
+                    base_name,
+                    cam1_name,
+                    T_base_cam1,
+                    cam2_name,
+                    T_base_cam2,
+                )
+            except ValueError:
+                pass
+            if mode == "guess":
+                window.after(150, refresh_scene)
+
+        refresh_scene()
+
     def refresh_devices(self) -> None:
         self.status_var.set("Searching for RealSense cameras…")
         self.refresh_button.configure(state="disabled")
@@ -800,6 +1453,7 @@ class CalibrationApp(ttk.Frame):
         """Attach the standalone GUI to a live ROS 2 TF tree."""
         if self._ros_tf is not None:
             self.transform_source_var.set("Live ROS TF")
+            self._show_transform_source()
             self.status_var.set("Already connected; refreshing TF frames…")
             self._ros_tf.wait_for_frames(  # type: ignore[attr-defined]
                 lambda frames: self._events.put(("tf_frames", frames))
@@ -870,18 +1524,13 @@ class CalibrationApp(ttk.Frame):
             values = [*transform[:3, 3], *quaternion]
             for variable, value in zip(self.transform_vars, values):
                 variable.set(f"{value:.10g}")
-            self.transform_source_var.set("Manual / file")
-            self.status_var.set(f"Imported camera 1 TF from {Path(path).name}")
             if Path(path).name.endswith(".launch.py"):
-                messagebox.showwarning(
-                    "Verify transform frame",
-                    "Captured geometry is now expressed in camera 1's native "
-                    "depth optical frame. The imported launch transform is only "
-                    "directly valid if its child frame is that depth optical "
-                    "frame. A base-to-camera-link transform must first be "
-                    "composed with the camera-link-to-depth-optical transform.",
-                    parent=self,
+                self.manual_pose_target_var.set(
+                    "Camera body / link (X-forward)"
                 )
+            self.transform_source_var.set("Manual / file")
+            self._show_transform_source()
+            self.status_var.set(f"Imported camera 1 TF from {Path(path).name}")
         except Exception as error:
             messagebox.showerror("Transform import failed", str(error), parent=self)
 
@@ -926,16 +1575,21 @@ class CalibrationApp(ttk.Frame):
             messagebox.showerror("Invalid configuration", str(error), parent=self)
             return
 
-        self.go_button.configure(state="disabled")
+        self._operation_in_progress = True
+        self.capture_button.configure(state="disabled")
         self.recalculate_button.configure(state="disabled")
         self.save_button.configure(state="disabled")
         self.save_launch_button.configure(state="disabled")
+        self.open_result_scene_button.configure(state="disabled")
         self.view_overlay_button.configure(state="disabled")
         self.view_3d_button.configure(state="disabled")
         self.progress.start(12)
         self.status_var.set("Capturing both streams… keep the scene static.")
         self._result = None
+        self._T_base_cam1 = None
         self._T_base_cam2 = None
+        self._T_base_cam2_optical = None
+        self.frame_scene.clear()
         self._pcd_cam1 = None
         self._pcd_cam2 = None
         self._captured_from_ros_pair = False
@@ -965,7 +1619,16 @@ class CalibrationApp(ttk.Frame):
                         cropped.append(cloud.select_by_index(keep.tolist()))
                     pcd_cam1, pcd_cam2 = cropped
                     self._events.put(
-                        ("ros_cloud_frames", (cloud1_frame, cloud2_frame))
+                        (
+                            "ros_cloud_frames",
+                            (
+                                cloud1_frame,
+                                cloud2_frame,
+                                self._ros_tf.physical_link_ancestor(  # type: ignore[attr-defined]
+                                    cloud2_frame
+                                ),
+                            ),
+                        )
                     )
                 else:
                     assert device1 is not None and device2 is not None
@@ -1030,9 +1693,16 @@ class CalibrationApp(ttk.Frame):
                 T_base_cam1_manual = None
             else:
                 T_base_cam1_manual = self._known_transform()
+                manual_pose_is_link = (
+                    self.manual_pose_target_var.get()
+                    == "Camera body / link (X-forward)"
+                )
+                cam1_manual_frame = self.cam1_manual_frame_var.get().strip()
+                if manual_pose_is_link and not cam1_manual_frame:
+                    raise ValueError("Camera 1 body/link frame is required")
                 cam2_cloud = self.cam2_frame_var.get().strip()
                 cam2_link = self.cam2_link_frame_var.get().strip()
-                if self._captured_from_ros_pair and not cam2_link:
+                if not cam2_link:
                     raise ValueError("Camera 2 link frame is required")
         except ValueError as error:
             messagebox.showerror("Invalid configuration", str(error), parent=self)
@@ -1041,9 +1711,11 @@ class CalibrationApp(ttk.Frame):
         pcd_cam1 = self._pcd_cam1
         pcd_cam2 = self._pcd_cam2
         self.recalculate_button.configure(state="disabled")
-        self.go_button.configure(state="disabled")
+        self._operation_in_progress = True
+        self.capture_button.configure(state="disabled")
         self.save_button.configure(state="disabled")
         self.save_launch_button.configure(state="disabled")
+        self.open_result_scene_button.configure(state="disabled")
         self.view_overlay_button.configure(state="disabled")
         self.progress.start(12)
         self.status_var.set("Recalculating from the cached capture…")
@@ -1076,7 +1748,23 @@ class CalibrationApp(ttk.Frame):
                     )
                 else:
                     assert T_base_cam1_manual is not None
-                    T_base_cloud1 = T_base_cam1_manual
+                    if manual_pose_is_link:
+                        if (
+                            self._captured_from_ros_pair
+                            and self._ros_tf is not None
+                        ):
+                            T_link1_cloud1 = self._ros_tf.lookup_matrix(  # type: ignore[attr-defined]
+                                cam1_manual_frame, cam1_cloud
+                            )
+                        else:
+                            T_link1_cloud1 = (
+                                realsense_link_to_depth_optical()
+                            )
+                        T_base_cloud1 = (
+                            T_base_cam1_manual @ T_link1_cloud1
+                        )
+                    else:
+                        T_base_cloud1 = T_base_cam1_manual
                     if self._captured_from_ros_pair and self._ros_tf is not None:
                         T_link2_cloud2 = self._ros_tf.lookup_matrix(  # type: ignore[attr-defined]
                             cam2_link, cam2_cloud
@@ -1085,8 +1773,10 @@ class CalibrationApp(ttk.Frame):
                             T_base_cam2_guess @ T_link2_cloud2
                         )
                     else:
-                        T_link2_cloud2 = None
-                        T_base_cloud2_guess = T_base_cam2_guess
+                        T_link2_cloud2 = realsense_link_to_depth_optical()
+                        T_base_cloud2_guess = (
+                            T_base_cam2_guess @ T_link2_cloud2
+                        )
                     initial = (
                         np.linalg.inv(T_base_cloud1) @ T_base_cloud2_guess
                     )
@@ -1114,7 +1804,16 @@ class CalibrationApp(ttk.Frame):
                     output_transform = T_base_cloud2
                     output_frame = cam2_cloud
                 self._events.put(
-                    ("result", (result, output_transform, output_frame))
+                    (
+                        "result",
+                        (
+                            result,
+                            T_base_cloud1,
+                            T_base_cloud2,
+                            output_transform,
+                            output_frame,
+                        ),
+                    )
                 )
             except Exception as error:
                 LOGGER.exception("Recalculation failed")
@@ -1579,6 +2278,7 @@ class CalibrationApp(ttk.Frame):
                         if "base" in frames:
                             self.base_frame_var.set("base")
                         self.transform_source_var.set("Live ROS TF")
+                        self._show_transform_source()
                         self.cam1_acquisition_var.set("ROS PointCloud2")
                         self.ros_connect_button.configure(
                             state="normal", text="Refresh ROS TF"
@@ -1596,12 +2296,23 @@ class CalibrationApp(ttk.Frame):
                     image1, image2 = payload  # type: ignore[misc]
                     self._show_previews(image1, image2)
                 elif event == "ros_cloud_frames":
-                    cloud1_frame, cloud2_frame = payload  # type: ignore[misc]
+                    (
+                        cloud1_frame,
+                        cloud2_frame,
+                        camera2_link,
+                    ) = payload  # type: ignore[misc]
                     self.cam1_frame_var.set(str(cloud1_frame))
                     self.cam2_frame_var.set(str(cloud2_frame))
+                    if camera2_link:
+                        self.cam2_link_frame_var.set(str(camera2_link))
                     self.status_var.set(
                         f"Received ROS clouds in '{cloud1_frame}' and "
                         f"'{cloud2_frame}'."
+                        + (
+                            f" Resolved camera 2 link as '{camera2_link}'."
+                            if camera2_link
+                            else " Select camera 2's physical link frame."
+                        )
                     )
                 elif event == "ros_pair_capture":
                     self._captured_from_ros_pair = bool(payload)
@@ -1613,29 +2324,48 @@ class CalibrationApp(ttk.Frame):
                     )
                 elif event == "capture_complete":
                     self.progress.stop()
-                    self.go_button.configure(state="normal")
+                    self._operation_in_progress = False
+                    self.capture_button.configure(state="normal")
                     self.recalculate_button.configure(state="normal")
                     self.status_var.set(
                         "Capture ready. Inspect clouds, then click Recalculate."
                     )
-                    self.notebook.select(self._tab_capture)
                 elif event == "result":
-                    result, transform, output_frame = payload  # type: ignore[misc]
+                    (
+                        result,
+                        camera1_transform,
+                        camera2_optical_transform,
+                        transform,
+                        output_frame,
+                    ) = payload  # type: ignore[misc]
                     self._result = result
+                    self._T_base_cam1 = camera1_transform
                     self._T_base_cam2 = transform
+                    self._T_base_cam2_optical = camera2_optical_transform
                     self._result_child_frame = output_frame
                     self._display_result(result, transform)
-                    self.status_var.set("Calibration accepted.")
+                    self.frame_scene.set_frames(
+                        self.base_frame_var.get().strip() or "base",
+                        self.cam1_frame_var.get().strip() or "camera 1",
+                        camera1_transform,
+                        self.cam2_frame_var.get().strip() or "camera 2",
+                        camera2_optical_transform,
+                    )
+                    self.status_var.set(
+                        "Calibration accepted. Inspect the overlay, then click Next."
+                    )
                     self.progress.stop()
-                    self.go_button.configure(state="normal")
+                    self._operation_in_progress = False
+                    self.capture_button.configure(state="normal")
                     self.recalculate_button.configure(state="normal")
                     self.save_button.configure(state="normal")
                     self.save_launch_button.configure(state="normal")
+                    self.open_result_scene_button.configure(state="normal")
                     self.view_overlay_button.configure(state="normal")
-                    self.notebook.select(self._tab_result)
                 elif event == "calibration_error":
                     self.progress.stop()
-                    self.go_button.configure(state="normal")
+                    self._operation_in_progress = False
+                    self.capture_button.configure(state="normal")
                     if self._pcd_cam1 is not None:
                         self.recalculate_button.configure(state="normal")
                     self.status_var.set(

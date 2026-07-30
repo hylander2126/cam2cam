@@ -75,6 +75,19 @@ Direct capture currently supports Intel RealSense cameras through
 `pyrealsense2`. Stop ROS camera drivers or other programs that already own the
 devices before capturing.
 
+To inspect or archive a camera's factory depth-to-color/IR/IMU calibration
+without running ROS:
+
+```bash
+icp-calib-realsense-extrinsics --serial CAMERA_SERIAL
+icp-calib-realsense-extrinsics --serial CAMERA_SERIAL --output extrinsics.json
+```
+
+This reads the device through librealsense—the same calibration source used by
+the RealSense ROS wrapper. The calibration pipeline itself remains in the
+native depth optical frame, so depth-to-color extrinsics are diagnostic unless
+the geometry is explicitly moved into another sensor stream.
+
 ### Example captures
 
 <table>

@@ -32,15 +32,32 @@ The ROS workflow uses the camera driver's internal
 `camera_2_link -> camera_2_depth_optical_frame` transform to convert the
 registration result into `base -> camera_2_link`.
 
-Direct standalone capture preserves each cloud in its native optical frame.
-Its result therefore ends at the configured camera 2 optical frame:
+Direct standalone RealSense capture preserves each cloud in its native depth
+optical frame for registration. In the default manual workflow, imported poses
+target the conventional camera body/link frame (X-forward, Y-left, Z-up).
+`cam2cam` composes the colocated RealSense body-to-depth-optical rotation before
+registration and converts the result back to the configured camera 2 link:
 
 ```text
-base -> camera_2_depth_optical_frame
+base -> camera_2_link
 ```
 
-Do not relabel this matrix as `base -> camera_2_link`. Converting between them
-requires the sensor's actual link-to-optical transform.
+If the supplied camera 1 pose already targets its depth optical frame, select
+**Depth optical frame (Z-forward)** instead. The standalone body frame is
+defined at the depth optical origin because ROS `camera_link` itself does not
+exist when the ROS driver is not running.
+
+RealSense factory sensor-to-sensor offsets are available directly from
+librealsense and can be exported with:
+
+```bash
+icp-calib-realsense-extrinsics --serial CAMERA_SERIAL --output extrinsics.json
+```
+
+The RealSense ROS convention places `camera_link`, depth, and left IR at the
+same origin. Consequently, factory `depth_to_color` translation is important
+when converting geometry to the color imager, but it is not an additional
+depth-to-`camera_link` offset.
 
 ## Before exporting
 

@@ -17,6 +17,22 @@ class RealSenseUnavailableError(RuntimeError):
     """Raised when the optional RealSense backend is not installed."""
 
 
+def realsense_link_to_depth_optical() -> np.ndarray:
+    """Return the conventional colocated RealSense body-to-optical transform.
+
+    The body frame is X-forward/Y-left/Z-up and the depth optical frame is
+    X-right/Y-down/Z-forward. Direct capture has no ROS ``camera_link`` object,
+    so the body origin is defined at the native depth optical origin.
+    """
+    transform = np.eye(4, dtype=np.float64)
+    transform[:3, :3] = [
+        [0.0, 0.0, 1.0],
+        [-1.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0],
+    ]
+    return transform
+
+
 def _rs():
     try:
         import pyrealsense2 as rs
@@ -57,6 +73,68 @@ def list_devices() -> list[RealSenseDevice]:
             )
         )
     return devices
+
+
+def factory_extrinsics(serial: str) -> dict[str, Any]:
+    """Read factory depth-to-stream extrinsics directly from a device.
+
+    Matrices follow this package's ``T_target_source`` convention. No streams
+    need to be started; librealsense exposes rigid factory calibration through
+    stream profiles.
+    """
+    rs = _rs()
+    device = next(
+        (
+            candidate
+            for candidate in rs.context().query_devices()
+            if candidate.get_info(rs.camera_info.serial_number) == serial
+        ),
+        None,
+    )
+    if device is None:
+        raise ValueError(f"RealSense device '{serial}' was not found")
+
+    profiles: dict[tuple[Any, int], Any] = {}
+    for sensor in device.query_sensors():
+        for profile in sensor.get_stream_profiles():
+            key = (profile.stream_type(), profile.stream_index())
+            profiles.setdefault(key, profile)
+    depth = next(
+        (
+            profile
+            for (stream_type, _index), profile in profiles.items()
+            if stream_type == rs.stream.depth
+        ),
+        None,
+    )
+    if depth is None:
+        raise RuntimeError(f"RealSense device '{serial}' has no depth profile")
+
+    transforms: dict[str, list[list[float]]] = {}
+    for (stream_type, index), target in profiles.items():
+        try:
+            extrinsics = depth.get_extrinsics_to(target)
+        except RuntimeError:
+            continue
+        rotation = np.asarray(extrinsics.rotation, dtype=np.float64).reshape(
+            3, 3, order="F"
+        )
+        matrix = np.eye(4, dtype=np.float64)
+        matrix[:3, :3] = rotation
+        matrix[:3, 3] = np.asarray(extrinsics.translation, dtype=np.float64)
+        stream_name = str(stream_type).removeprefix("stream.")
+        transforms[f"depth_to_{stream_name}_{index}"] = matrix.tolist()
+
+    return {
+        "serial": serial,
+        "model": device.get_info(rs.camera_info.name),
+        "convention": "T_target_source; p_target = T_target_source @ p_source",
+        "camera_link_note": (
+            "RealSense ROS camera_link, depth, and left-IR origins coincide"
+        ),
+        "T_link_depth_optical": realsense_link_to_depth_optical().tolist(),
+        "factory_depth_to_stream": transforms,
+    }
 
 
 def _texture_colors(points: Any, color_frame: Any) -> tuple[np.ndarray, np.ndarray]:

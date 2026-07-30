@@ -20,5 +20,8 @@ gui = ["ttkbootstrap>=1.10"]
 [project.gui-scripts]
 icp-calib-gui = "icp_calib.gui:main"
 
+[project.scripts]
+icp-calib-realsense-extrinsics = "icp_calib.realsense_extrinsics:main"
+
 [tool.setuptools.packages.find]
 include = ["icp_calib*"]
