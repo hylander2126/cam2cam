@@ -5,7 +5,7 @@ import logging
 import numpy as np
 import open3d as o3d
 
-from multicam_icp_calib import RegistrationConfig, calibrate
+from icp_calib import RegistrationConfig, calibrate
 
 logging.basicConfig(level=logging.INFO)
 

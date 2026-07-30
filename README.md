@@ -56,7 +56,7 @@ python3 -m pip install -e .
 Launch the GUI:
 
 ```bash
-python3 -m multicam_icp_calib.gui
+python3 -m icp_calib.gui
 ```
 
 Then:
@@ -108,7 +108,7 @@ camera TF trees:
 
 ```bash
 mkdir -p ~/ros2_ws/src
-cp -r ros2_templates/multicam_icp_calib_bringup ~/ros2_ws/src/
+cp -r ros2_templates/icp_calib_bringup ~/ros2_ws/src/
 ```
 
 `camera_transforms.launch.py` publishes camera 1's known attachment when your
@@ -124,7 +124,7 @@ See [ROS 2 setup](docs/ros2_setup.md) for the short end-to-end workflow.
 import numpy as np
 import open3d as o3d
 
-from multicam_icp_calib import RegistrationConfig, calibrate
+from icp_calib import RegistrationConfig, calibrate
 
 pcd_camera1 = o3d.io.read_point_cloud("camera_1_workspace.ply")
 pcd_camera2 = o3d.io.read_point_cloud("camera_2_workspace.ply")

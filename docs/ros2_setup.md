@@ -27,10 +27,10 @@ existing robot stack and is not tied to RealSense.
 
 ```bash
 mkdir -p ~/ros2_ws/src
-cp -r ros2_templates/multicam_icp_calib_bringup ~/ros2_ws/src/
+cp -r ros2_templates/icp_calib_bringup ~/ros2_ws/src/
 ```
 
-Edit `multicam_icp_calib_bringup/launch/camera_transforms.launch.py`:
+Edit `icp_calib_bringup/launch/camera_transforms.launch.py`:
 
 - If camera 1 already has a TF publisher, set `PUBLISH_CAMERA_1 = False`.
 - Otherwise, set camera 1's frame, translation, and quaternion to its known
@@ -43,9 +43,9 @@ Build and launch the template:
 ```bash
 cd ~/ros2_ws
 source /opt/ros/jazzy/setup.bash
-colcon build --packages-select multicam_icp_calib_bringup
+colcon build --packages-select icp_calib_bringup
 source install/setup.bash
-ros2 launch multicam_icp_calib_bringup camera_transforms.launch.py
+ros2 launch icp_calib_bringup camera_transforms.launch.py
 ```
 
 The camera 2 identity is temporary. It attaches the driver's internal TF tree
@@ -60,7 +60,7 @@ ROS-enabled shell:
 source /opt/ros/jazzy/setup.bash
 source ~/ros2_ws/install/setup.bash
 source /path/to/cam2cam/.venv/bin/activate
-python3 -m multicam_icp_calib.gui
+python3 -m icp_calib.gui
 ```
 
 In the GUI:
@@ -81,9 +81,9 @@ rebuild and relaunch it:
 
 ```bash
 cd ~/ros2_ws
-colcon build --packages-select multicam_icp_calib_bringup
+colcon build --packages-select icp_calib_bringup
 source install/setup.bash
-ros2 launch multicam_icp_calib_bringup camera_transforms.launch.py
+ros2 launch icp_calib_bringup camera_transforms.launch.py
 ```
 
 The one template now publishes camera 2's calibrated pose and, only when

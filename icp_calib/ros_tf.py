@@ -103,7 +103,7 @@ class LiveRosTf:
         self._context = Context()
         rclpy.init(context=self._context)
         self._node = rclpy.create_node(
-            "multicam_icp_calib_tf_listener", context=self._context
+            "icp_calib_tf_listener", context=self._context
         )
         self._buffer = Buffer(node=self._node)
         self._listener = TransformListener(
@@ -115,7 +115,7 @@ class LiveRosTf:
         self._executor.add_node(self._node)
         self._running = True
         self._thread = threading.Thread(
-            target=self._spin, name="multicam-tf-listener", daemon=True
+            target=self._spin, name="icp-calib-tf-listener", daemon=True
         )
         self._thread.start()
 

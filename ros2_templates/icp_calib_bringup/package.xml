@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <package format="3">
-  <name>multicam_icp_calib_bringup</name>
+  <name>icp_calib_bringup</name>
   <version>0.1.0</version>
   <description>Two-camera static TF template for cam2cam calibration.</description>
-  <maintainer email="maintainer@example.com">multicam_icp_calib maintainer</maintainer>
+  <maintainer email="maintainer@example.com">icp_calib maintainer</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>

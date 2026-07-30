@@ -23,7 +23,7 @@ def _rs():
     except ImportError as error:
         raise RealSenseUnavailableError(
             "RealSense support is not installed. Run "
-            "'python -m pip install multicam-icp-calib[realsense]'."
+            "'python -m pip install icp-calib[realsense]'."
         ) from error
     return rs
 

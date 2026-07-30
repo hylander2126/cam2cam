@@ -1668,7 +1668,7 @@ def main() -> None:
         LOGGER.warning(
             "ttkbootstrap is not installed; using the basic Tk theme. "
             "Install the GUI extra for the modern theme: "
-            "pip install 'multicam-icp-calib[gui]'"
+            "pip install 'icp-calib[gui]'"
         )
     CalibrationApp(root)
     root.mainloop()
