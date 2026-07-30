@@ -1,118 +1,60 @@
-# ROS 2 Setup and Calibration
+# ROS 2 Setup
 
-Use this workflow when camera 1 is already calibrated in a robot stack and both
-cameras publish `sensor_msgs/msg/PointCloud2` data and internal TF frames.
+## What you need to bring
 
-## Requirements
+An existing extrinsic (hand-eye) calibration for camera 1, provided as either:
 
-- A sourced ROS 2 installation
-- `rclpy`, `tf2_ros`, `sensor_msgs`, `launch`, and `launch_ros`
-- Point-cloud topics for both cameras
-- A connected TF chain from the desired base frame to camera 1's cloud frame
-- For the supplied templates, Intel's `realsense2_camera` wrapper
+- a known 6D pose relative to your robot or world frame; or
+- an existing ROS 2 TF publisher launch file.
 
-On ROS 2 Jazzy:
+If camera 1 is not calibrated yet, the
+[MoveIt hand-eye calibration tutorial](https://moveit.picknik.ai/humble/doc/examples/hand_eye_calibration/hand_eye_calibration_tutorial.html)
+describes an approachable GUI-based method.
 
-```bash
-sudo apt install \
-  ros-jazzy-realsense2-camera \
-  ros-jazzy-tf2-ros
-```
+That trusted camera 1 pose is the only existing calibration `cam2cam` needs.
+If it is already published in TF, keep using that publisher. Otherwise, enter
+the pose in the supplied two-camera template.
 
-Package names and launch arguments may differ on other ROS distributions.
+Both camera drivers must publish:
 
-## 1. Add the bringup template
+- a `sensor_msgs/msg/PointCloud2` topic
+- their normal internal TF, from the camera link to the cloud's optical frame
+
+The template does not launch or configure camera drivers, so it works with an
+existing robot stack and is not tied to RealSense.
+
+## 1. Add the TF template
 
 ```bash
 mkdir -p ~/ros2_ws/src
-cp -r \
-  ros2_templates/multicam_icp_calib_bringup \
-  ~/ros2_ws/src/
+cp -r ros2_templates/multicam_icp_calib_bringup ~/ros2_ws/src/
+```
 
+Edit `multicam_icp_calib_bringup/launch/camera_transforms.launch.py`:
+
+- If camera 1 already has a TF publisher, set `PUBLISH_CAMERA_1 = False`.
+- Otherwise, set camera 1's frame, translation, and quaternion to its known
+  `base -> camera_1_link` pose.
+- Set the base and camera 2 link frame names.
+- Leave camera 2's pose at identity for the calibration run.
+
+Build and launch the template:
+
+```bash
 cd ~/ros2_ws
 source /opt/ros/jazzy/setup.bash
 colcon build --packages-select multicam_icp_calib_bringup
 source install/setup.bash
+ros2 launch multicam_icp_calib_bringup camera_transforms.launch.py
 ```
 
-The package contains:
+The camera 2 identity is temporary. It attaches the driver's internal TF tree
+so `cam2cam` can read the link-to-optical transform; it is not a calibration.
 
-```text
-multicam_icp_calib_bringup/
-â”œâ”€â”€ CMakeLists.txt
-â”œâ”€â”€ package.xml
-â””â”€â”€ launch/
-    â”œâ”€â”€ camera_2_calibration.launch.py
-    â”œâ”€â”€ camera_2_dummy_tf.launch.py
-    â””â”€â”€ dual_realsense_calibration.launch.py
-```
+## 2. Calibrate
 
-## 2. Inspect devices, topics, and frames
-
-List RealSense serial numbers:
-
-```bash
-rs-enumerate-devices | grep "Serial Number"
-```
-
-The supplied RealSense templates expect numeric serials with a leading
-underscore, such as `_207322251310`. Confirm this convention against your
-installed wrapper.
-
-Find point-cloud topics:
-
-```bash
-ros2 topic list -t | grep PointCloud2
-```
-
-Read a cloud's frame ID:
-
-```bash
-ros2 topic echo /YOUR/POINTS_TOPIC --field header --once
-```
-
-Verify camera 1's trusted chain:
-
-```bash
-ros2 run tf2_ros tf2_echo base CAMERA_1_CLOUD_FRAME
-```
-
-## 3. Launch the cameras
-
-If camera 1 is already launched by the robot, launch camera 2 and its temporary
-identity transform:
-
-```bash
-ros2 launch multicam_icp_calib_bringup \
-  camera_2_calibration.launch.py \
-  camera2_serial:=_CAMERA_2_SERIAL \
-  base_frame:=base \
-  camera2_name:=camera_2 \
-  camera2_namespace:=camera_2 \
-  camera2_link_frame:=camera_2_link
-```
-
-If neither camera is running:
-
-```bash
-ros2 launch multicam_icp_calib_bringup \
-  dual_realsense_calibration.launch.py \
-  camera1_serial:=_CAMERA_1_SERIAL \
-  camera2_serial:=_CAMERA_2_SERIAL \
-  base_frame:=base
-```
-
-The dual-camera launch does not create camera 1's real calibration. Another
-publisher must provide the trusted `base -> camera_1` chain.
-
-The temporary identity publisher only connects camera 2's factory TF subtree
-so the tool can query its link-to-optical transform. It is not calibration
-data.
-
-## 4. Capture and register
-
-Start the GUI from a shell with ROS, the workspace, and the Python environment
-sourced:
+Start both camera drivers using your normal bringup, then launch the GUI from a
+ROS-enabled shell:
 
 ```bash
 source /opt/ros/jazzy/setup.bash
@@ -123,61 +65,37 @@ python3 -m multicam_icp_calib.gui
 
 In the GUI:
 
-1. Open **ROS & TF**.
-2. Set the base frame and click **Connect ROS TF**.
-3. Select both `PointCloud2` topics.
-4. Capture and verify both cloud frame IDs.
-5. Select camera 2's physical link frame.
-6. Run registration and inspect the overlay and metrics.
-7. Export **ROS 2 launch.py** after accepting the result.
+1. Under **ROS & TF**, connect to ROS and select both point-cloud topics.
+2. Confirm camera 2's physical link frame.
+3. Capture the stationary scene and run calibration.
+4. Inspect the overlay, then export **ROS 2 launch.py**.
 
-The GUI takes the next message from each topic concurrently but does not
-perform hardware timestamp synchronization. Keep the cameras, robot, and scene
-stationary.
+The GUI uses camera 1's trusted TF and camera 2's internal link-to-optical TF
+to calculate the final `base -> camera_2_link` pose.
 
-## 5. Install the calibrated transform
+## 3. Make camera 2's result permanent
+
+Stop `camera_transforms.launch.py`. Copy the exported camera 2 translation and
+quaternion into `CAMERA_2_XYZ` and `CAMERA_2_XYZW` in that same template, then
+rebuild and relaunch it:
 
 ```bash
-cp /path/to/camera_2_tf.launch.py \
-  ~/ros2_ws/src/multicam_icp_calib_bringup/launch/
-
 cd ~/ros2_ws
 colcon build --packages-select multicam_icp_calib_bringup
 source install/setup.bash
+ros2 launch multicam_icp_calib_bringup camera_transforms.launch.py
 ```
 
-Stop the temporary identity publisher before publishing the calibrated
-transform. Never run both publishers simultaneously because they claim the
-same TF relationship.
+The one template now publishes camera 2's calibrated pose and, only when
+needed, camera 1's known pose. Do not also run another publisher for either
+same parent/child TF pair.
 
-Relaunch camera 2 without the dummy transform:
-
-```bash
-ros2 launch multicam_icp_calib_bringup \
-  camera_2_calibration.launch.py \
-  camera2_serial:=_CAMERA_2_SERIAL \
-  publish_dummy_tf:=false
-```
-
-Then launch the generated transform:
-
-```bash
-ros2 launch multicam_icp_calib_bringup camera_2_tf.launch.py
-```
-
-## 6. Validate
+Check the result:
 
 ```bash
 ros2 run tf2_ros tf2_echo base camera_2_link
 ```
 
-In RViz:
-
-1. Set the fixed frame to `base`.
-2. Display both clouds in contrasting colors.
-3. Inspect corners, edges, and surfaces throughout the overlap.
-4. Repeat the calibration to assess repeatability.
-5. When practical, compare against a physical measurement or target-based
-   calibration.
-
-Do not move a robot based only on a visually plausible overlay.
+In RViz, use `base` as the fixed frame and display both clouds in contrasting
+colors. Check several surfaces and viewpoints; a plausible overlay alone is
+not sufficient evidence for safety-critical robot motion.

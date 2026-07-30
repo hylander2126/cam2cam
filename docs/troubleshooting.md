@@ -54,7 +54,7 @@ compare against an independent validation method.
 
 ## A direct-capture camera fails to start
 
-The direct backend currently requests depth and RGB at `640 Ã— 360`, 30 FPS,
+The direct backend currently requests depth and RGB at `640 × 360`, 30 FPS,
 warms up for 30 frames, and accumulates three frames by default. A camera that
 does not support this stream profile will fail to start.
 

@@ -23,9 +23,9 @@ persistent transform generally ends at the physical camera link:
 
 ```text
 base
-â””â”€â”€ camera_2_link                   <- generated calibration
-    â””â”€â”€ camera_2_depth_frame        <- camera driver
-        â””â”€â”€ camera_2_depth_optical_frame
+└── camera_2_link                   <- generated calibration
+    └── camera_2_depth_frame        <- camera driver
+        └── camera_2_depth_optical_frame
 ```
 
 The ROS workflow uses the camera driver's internal

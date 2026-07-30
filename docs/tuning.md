@@ -6,16 +6,17 @@ These values are starting points, not universal calibration settings:
 |---|---:|---|
 | ICP voxel | `0.008 m` | Fine registration scale |
 | Global voxel | `0.025 m` | FPFH/RANSAC scale |
-| Camera 1 depth | `0.10â€“3.00 m` | General D400-series crop |
-| Camera 2 depth | `0.07â€“1.00 m` | D405-oriented crop |
+| Camera 1 depth | `0.10–3.00 m` | General D400-series crop |
+| Camera 2 depth | `0.07–1.00 m` | D405-oriented crop |
 | Refinement | `point_to_plane` | Geometry-only default |
 | Minimum fitness | `0.20` | Implementation default |
-| Maximum refined RMSE | `1 Ã— ICP voxel` | Implementation default |
+| Maximum refined RMSE | `1 × ICP voxel` | Implementation default |
 
 Tune depth crops and voxel sizes to the sensor noise, working distance, scene
 scale, and amount of overlap.
 
 ## Scene selection
+
 
 Good scenes contain shared geometry at several depths, including corners,
 boxes, machinery, and other non-coplanar surfaces.

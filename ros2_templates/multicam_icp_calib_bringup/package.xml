@@ -2,7 +2,7 @@
 <package format="3">
   <name>multicam_icp_calib_bringup</name>
   <version>0.1.0</version>
-  <description>Copy-ready ROS 2 launch files for multicam_icp_calib.</description>
+  <description>Two-camera static TF template for cam2cam calibration.</description>
   <maintainer email="maintainer@example.com">multicam_icp_calib maintainer</maintainer>
   <license>MIT</license>
 
@@ -10,8 +10,6 @@
 
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
-  <exec_depend>ament_index_python</exec_depend>
-  <exec_depend>realsense2_camera</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
 
   <export>

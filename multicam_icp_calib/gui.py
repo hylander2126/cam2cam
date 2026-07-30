@@ -468,12 +468,6 @@ class CalibrationApp(ttk.Frame):
         ).grid(
             row=5, column=1, columnspan=3, sticky="ew", padx=(8, 0), pady=(10, 0)
         )
-        ttk.Button(
-            ros,
-            text="Export temporary camera 2 identity TF…",
-            command=self.export_dummy_camera2_tf,
-        ).grid(row=6, column=0, columnspan=4, sticky="w", pady=(14, 0))
-
         self.manual_toggle_button = ttk.Button(
             self._tab_transform,
             text="▸  Manual transform or import from file",
@@ -897,40 +891,6 @@ class CalibrationApp(ttk.Frame):
         except ValueError as error:
             raise ValueError("All camera 1 TF fields must be numeric") from error
         return matrix_from_translation_quaternion(values[:3], values[3:])
-
-    def export_dummy_camera2_tf(self) -> None:
-        """Write an identity base-to-camera2-link transform for temporary bringup."""
-        parent = self.base_frame_var.get().strip() or "base"
-        child = self.cam2_link_frame_var.get().strip()
-        if not child:
-            messagebox.showerror(
-                "Missing frame", "Camera 2 link frame is required.", parent=self
-            )
-            return
-        path = filedialog.asksaveasfilename(
-            title="Export temporary camera 2 identity transform",
-            initialfile="camera_2_dummy_tf.launch.py",
-            defaultextension=".launch.py",
-            filetypes=[("ROS 2 Python launch file", "*.launch.py")],
-        )
-        if not path:
-            return
-        if not path.endswith(".launch.py"):
-            path = f"{path.removesuffix('.py')}.launch.py"
-        try:
-            save_transform(
-                path,
-                np.eye(4),
-                parent_frame=parent,
-                child_frame=child,
-                metadata={"temporary_identity_transform": True},
-            )
-            self.status_var.set(
-                f"Exported temporary identity TF {Path(path).name}. "
-                "Replace it with the calibration result."
-            )
-        except Exception as error:
-            messagebox.showerror("Dummy TF export failed", str(error), parent=self)
 
     def start_calibration(self) -> None:
         try:
@@ -1515,8 +1475,8 @@ class CalibrationApp(ttk.Frame):
                 },
             )
             self.status_var.set(
-                f"Exported {Path(path).name}. Stop the temporary identity "
-                "publisher before launching this calibrated transform."
+                f"Exported {Path(path).name}. Copy its camera 2 translation "
+                "and quaternion into camera_transforms.launch.py."
             )
         except Exception as error:
             messagebox.showerror(
