@@ -67,7 +67,7 @@ environment with access to system packages:
 python3 -m venv --system-site-packages .venv
 source /opt/ros/jazzy/setup.bash
 source .venv/bin/activate
-python3 -m pip install -e '.[all]'
+python3 -m pip install -r requirements.txt
 ```
 
 If ROS uses a different Python version from the environment, use the

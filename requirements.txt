@@ -1,0 +1,6 @@
+# Install the local package and its core dependencies from pyproject.toml.
+-e .
+
+# GUI and direct Intel RealSense support.
+ttkbootstrap>=1.10
+pyrealsense2>=2.54

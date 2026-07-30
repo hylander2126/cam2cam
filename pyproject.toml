@@ -16,7 +16,6 @@ dependencies = [
 [project.optional-dependencies]
 realsense = ["pyrealsense2>=2.54"]
 gui = ["ttkbootstrap>=1.10"]
-all = ["pyrealsense2>=2.54", "ttkbootstrap>=1.10"]
 
 [project.gui-scripts]
 icp-calib-gui = "icp_calib.gui:main"

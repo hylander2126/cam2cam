@@ -35,7 +35,7 @@ git clone https://github.com/hylander2126/cam2cam.git
 cd cam2cam
 
 # from a virtual environment
-python3 -m pip install -e '.[all]'
+python3 -m pip install -r requirements.txt
 ```
 
 On Ubuntu, the GUI may also require:
@@ -43,13 +43,14 @@ On Ubuntu, the GUI may also require:
 ```bash
 sudo apt install python3-venv python3-tk
 ```
-
-To install only the reusable registration core without the GUI and direct
-RealSense backend:
+<!-- 
+`requirements.txt` installs the local package in editable mode, along with the
+GUI and direct RealSense dependencies. To install only the reusable
+registration core:
 
 ```bash
 python3 -m pip install -e .
-```
+``` -->
 
 ## Quick start
 
@@ -58,6 +59,7 @@ Launch the GUI:
 ```bash
 python3 -m icp_calib.gui
 ```
+![GUI](img/gui.png)
 
 Then:
 
