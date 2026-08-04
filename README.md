@@ -71,6 +71,29 @@ Then:
 4. Run registration and inspect the aligned overlay and quality metrics.
 5. Export the accepted transform.
 
+### Registration modes and the camera 2 guess
+
+The two GUI registration modes use different initializations:
+
+- **FPFH global + ICP** ignores the camera 2 XYZ/RPY guess. It matches FPFH
+  geometry descriptors, uses randomized RANSAC to obtain an unconstrained
+  initial transform, and then runs multiscale ICP. Open3D may report that too
+  few correspondences survived its *mutual filter* and that it is falling back
+  to the original correspondences. That message means the descriptor matching
+  was relaxed; it does not mean the manual pose guess was used.
+- **Approximate pose + ICP** skips FPFH and RANSAC. It converts the entered
+  camera 2 pose into the camera-cloud frames and uses that transform to seed
+  multiscale ICP. A rough estimate should describe both where camera 2 is
+  located relative to the base and the direction in which it is looking.
+
+FPFH/RANSAC is randomized, so repeated global runs on the same captured clouds
+can produce different candidates when the scene is ambiguous. A log entry such
+as `Global RANSAC: fitness=...` means global initialization found a candidate;
+the calibration can still be rejected later if fine ICP does not meet the
+final fitness and RMSE checks. The fitness values from different ICP scales are
+not directly comparable because their voxel sizes and correspondence radii
+differ.
+
 Direct capture currently supports Intel RealSense cameras through
 `pyrealsense2`. Stop ROS camera drivers or other programs that already own the
 devices before capturing.

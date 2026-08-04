@@ -428,6 +428,7 @@ class CalibrationApp(ttk.Frame):
         self._ros_tf: object | None = None
         self._captured_from_ros_pair = False
         self._operation_in_progress = False
+        self._capture_tab_opened = False
         self._result_child_frame = "camera_2_depth_optical_frame"
 
         self.camera1_var = tk.StringVar()
@@ -440,7 +441,7 @@ class CalibrationApp(ttk.Frame):
         self.manual_pose_target_var = tk.StringVar(
             value="Camera body / link (X-forward)"
         )
-        self.frustum_axis_var = tk.StringVar(value="X-forward")
+        self.frustum_axis_var = tk.StringVar(value="Z-forward")
         self.voxel_var = tk.StringVar(value="0.008")
         self.global_voxel_var = tk.StringVar(value="0.025")
         self.refinement_var = tk.StringVar(value="point_to_plane")
@@ -909,7 +910,7 @@ class CalibrationApp(ttk.Frame):
         self._tab_intro(
             self._tab_registration,
             "Align the captured point clouds",
-            "Start globally, or constrain the search with an approximate pose.",
+            "Choose an unconstrained global search or seed ICP with a rough pose.",
         )
         pose = ttk.LabelFrame(
             self._tab_registration,
@@ -918,7 +919,8 @@ class CalibrationApp(ttk.Frame):
             style="Section.TLabelframe",
         )
         pose.grid(row=1, column=0, sticky="new")
-        mode_label = ttk.Label(pose, text="Registration mode")
+        pose.columnconfigure(1, weight=1)
+        mode_label = ttk.Label(pose, text="Registration mode  ⓘ")
         mode_label.grid(row=0, column=0, sticky="w")
         mode_combo = ttk.Combobox(
             pose,
@@ -928,6 +930,9 @@ class CalibrationApp(ttk.Frame):
             width=24,
         )
         mode_combo.grid(row=0, column=1, columnspan=2, sticky="w", padx=(8, 0))
+        mode_combo.bind(
+            "<<ComboboxSelected>>", self._update_registration_mode_controls
+        )
         mode_tip = (
             "FPFH searches broadly and is the safest default when the pose is "
             "unknown. Approximate pose + ICP is faster but needs a close guess.\n\n"
@@ -937,7 +942,7 @@ class CalibrationApp(ttk.Frame):
         _Tooltip(mode_label, mode_tip)
         _Tooltip(mode_combo, mode_tip)
 
-        xyz_label = ttk.Label(pose, text="Approx. camera 2 XYZ (m)")
+        xyz_label = ttk.Label(pose, text="Approx. camera 2 XYZ (m)  ⓘ")
         xyz_label.grid(row=1, column=0, sticky="w", pady=(12, 0))
         xyz_tip = (
             "Camera 2 body/link position in the base frame, in meters. These "
@@ -946,13 +951,21 @@ class CalibrationApp(ttk.Frame):
             "even a rough position can prevent convergence on the wrong surface."
         )
         _Tooltip(xyz_label, xyz_tip)
+        self.initial_pose_entries: list[ttk.Entry] = []
+        xyz_fields = ttk.Frame(pose)
+        xyz_fields.grid(row=1, column=1, sticky="w", padx=(18, 0), pady=(12, 0))
         for index, label in enumerate(("X", "Y", "Z")):
-            axis_label = ttk.Label(pose, text=label)
-            axis_label.grid(row=1, column=index * 2 + 1, pady=(12, 0))
+            axis_label = ttk.Label(xyz_fields, text=label)
+            axis_label.grid(row=0, column=index * 2, padx=(0, 5))
             entry = ttk.Entry(
-                pose, textvariable=self.initial_pose_vars[index], width=8
+                xyz_fields, textvariable=self.initial_pose_vars[index], width=8
             )
-            entry.grid(row=1, column=index * 2 + 2, pady=(12, 0))
+            entry.grid(
+                row=0,
+                column=index * 2 + 1,
+                padx=(0, 18 if index < 2 else 0),
+            )
+            self.initial_pose_entries.append(entry)
             _Tooltip(axis_label, xyz_tip)
             _Tooltip(entry, xyz_tip)
 
@@ -965,15 +978,30 @@ class CalibrationApp(ttk.Frame):
             "confirm it in Preview initial pose in 3D."
         )
         _Tooltip(rpy_label, rpy_tip)
+        rpy_fields = ttk.Frame(pose)
+        rpy_fields.grid(row=2, column=1, sticky="w", padx=(18, 0), pady=(12, 0))
         for index, label in enumerate(("R", "P", "Y")):
-            axis_label = ttk.Label(pose, text=label)
-            axis_label.grid(row=2, column=index * 2 + 1, pady=(12, 0))
+            axis_label = ttk.Label(rpy_fields, text=label)
+            axis_label.grid(row=0, column=index * 2, padx=(0, 5))
             entry = ttk.Entry(
-                pose, textvariable=self.initial_pose_vars[index + 3], width=8
+                rpy_fields,
+                textvariable=self.initial_pose_vars[index + 3],
+                width=8,
             )
-            entry.grid(row=2, column=index * 2 + 2, pady=(12, 0))
+            entry.grid(
+                row=0,
+                column=index * 2 + 1,
+                padx=(0, 18 if index < 2 else 0),
+            )
+            self.initial_pose_entries.append(entry)
             _Tooltip(axis_label, rpy_tip)
             _Tooltip(entry, rpy_tip)
+
+        self.pose_mode_note = ttk.Label(pose, foreground="#8795a8")
+        self.pose_mode_note.grid(
+            row=3, column=0, columnspan=2, sticky="w", pady=(10, 0)
+        )
+        self._update_registration_mode_controls()
 
         self._solver_settings_expanded = False
         self.solver_settings_button = ttk.Button(
@@ -993,7 +1021,7 @@ class CalibrationApp(ttk.Frame):
         self._solver_settings_frame = solver
         solver.grid(row=3, column=0, sticky="new", pady=(10, 0))
 
-        icp_label = ttk.Label(solver, text="ICP voxel (m)")
+        icp_label = ttk.Label(solver, text="ICP voxel (m)  ⓘ")
         icp_label.grid(row=0, column=0, sticky="w")
         icp_entry = ttk.Entry(solver, textvariable=self.voxel_var, width=10)
         icp_entry.grid(row=0, column=1, padx=(6, 18))
@@ -1006,7 +1034,7 @@ class CalibrationApp(ttk.Frame):
         _Tooltip(icp_label, icp_tip)
         _Tooltip(icp_entry, icp_tip)
 
-        global_label = ttk.Label(solver, text="Global voxel (m)")
+        global_label = ttk.Label(solver, text="Global voxel (m)  ⓘ")
         global_label.grid(row=0, column=2, sticky="w")
         global_entry = ttk.Entry(
             solver, textvariable=self.global_voxel_var, width=10
@@ -1021,7 +1049,7 @@ class CalibrationApp(ttk.Frame):
         _Tooltip(global_label, global_tip)
         _Tooltip(global_entry, global_tip)
 
-        refinement_label = ttk.Label(solver, text="Refinement")
+        refinement_label = ttk.Label(solver, text="Refinement  ⓘ")
         refinement_label.grid(row=1, column=0, sticky="w", pady=(12, 0))
         refinement_combo = ttk.Combobox(
             solver,
@@ -1041,6 +1069,29 @@ class CalibrationApp(ttk.Frame):
         _Tooltip(refinement_label, refinement_tip)
         _Tooltip(refinement_combo, refinement_tip)
         solver.grid_remove()
+
+    def _update_registration_mode_controls(
+        self, _event: object | None = None
+    ) -> None:
+        """Show whether the rough pose participates in the selected solver."""
+        uses_guess = self.registration_mode_var.get() == "Approximate pose + ICP"
+        state = "normal" if uses_guess else "disabled"
+        for entry in self.initial_pose_entries:
+            entry.configure(state=state)
+        if uses_guess:
+            self.pose_mode_note.configure(
+                text=(
+                    "The XYZ/RPY values are used as the initial camera 2 pose "
+                    "for multiscale ICP."
+                )
+            )
+        else:
+            self.pose_mode_note.configure(
+                text=(
+                    "The XYZ/RPY values are not used by FPFH global + ICP. "
+                    "RANSAC supplies that mode's initial pose."
+                )
+            )
 
     def _toggle_solver_settings(self) -> None:
         self._solver_settings_expanded = not self._solver_settings_expanded
@@ -1099,14 +1150,6 @@ class CalibrationApp(ttk.Frame):
             style="Primary.TButton",
         )
         self.save_launch_button.pack(side="right", padx=(0, 8))
-        self.open_result_scene_button = ttk.Button(
-            result_actions,
-            text="Open 3D frame view",
-            command=lambda: self._open_frame_scene("result"),
-            state="disabled",
-        )
-        self.open_result_scene_button.pack(side="right", padx=(0, 8))
-
         footer = ttk.Frame(self, padding=(2, 12, 2, 0), style="App.TFrame")
         footer.grid(row=2, column=0, sticky="ew")
         footer.columnconfigure(0, weight=1)
@@ -1158,6 +1201,11 @@ class CalibrationApp(ttk.Frame):
             self.status_var.set("Manual camera 1 transform accepted.")
         self._current_tab_index = selected
         self._update_tab_navigation()
+        if selected == 2 and not self._capture_tab_opened:
+            # Opening Capture & Inspect is the one automatic capture trigger.
+            # Mark it first so validation errors do not cause surprise retries.
+            self._capture_tab_opened = True
+            self.after_idle(self.start_calibration)
 
     def _update_tab_navigation(self, _event: object | None = None) -> None:
         if not hasattr(self, "back_button"):
@@ -1172,7 +1220,7 @@ class CalibrationApp(ttk.Frame):
         controls.grid(row=3, column=0, sticky="w", pady=(14, 0))
         self.capture_button = ttk.Button(
             controls,
-            text="Capture streams",
+            text="(re)capture streams",
             command=self.start_calibration,
             style="Primary.TButton",
         )
@@ -1249,7 +1297,7 @@ class CalibrationApp(ttk.Frame):
             command=lambda: self._set_frustum_axis("z"),
         )
         self.frustum_z_button.pack(side="left")
-        self._set_frustum_axis("x")
+        self._set_frustum_axis("z")
         ttk.Label(
             scene_frame,
             text="Drag to orbit  •  Scroll to zoom  •  Double-click to reset",
@@ -1580,7 +1628,6 @@ class CalibrationApp(ttk.Frame):
         self.recalculate_button.configure(state="disabled")
         self.save_button.configure(state="disabled")
         self.save_launch_button.configure(state="disabled")
-        self.open_result_scene_button.configure(state="disabled")
         self.view_overlay_button.configure(state="disabled")
         self.view_3d_button.configure(state="disabled")
         self.progress.start(12)
@@ -1715,7 +1762,6 @@ class CalibrationApp(ttk.Frame):
         self.capture_button.configure(state="disabled")
         self.save_button.configure(state="disabled")
         self.save_launch_button.configure(state="disabled")
-        self.open_result_scene_button.configure(state="disabled")
         self.view_overlay_button.configure(state="disabled")
         self.progress.start(12)
         self.status_var.set("Recalculating from the cached capture…")
@@ -1818,6 +1864,8 @@ class CalibrationApp(ttk.Frame):
             except Exception as error:
                 LOGGER.exception("Recalculation failed")
                 self._events.put(("calibration_error", error))
+                if np.allclose(guess_values, 0.0):
+                    self._events.put(("missing_pose_guess", None))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -2352,7 +2400,7 @@ class CalibrationApp(ttk.Frame):
                         camera2_optical_transform,
                     )
                     self.status_var.set(
-                        "Calibration accepted. Inspect the overlay, then click Next."
+                        "Calibration accepted. Review the result and overlay."
                     )
                     self.progress.stop()
                     self._operation_in_progress = False
@@ -2360,8 +2408,8 @@ class CalibrationApp(ttk.Frame):
                     self.recalculate_button.configure(state="normal")
                     self.save_button.configure(state="normal")
                     self.save_launch_button.configure(state="normal")
-                    self.open_result_scene_button.configure(state="normal")
                     self.view_overlay_button.configure(state="normal")
+                    self.notebook.select(self._tab_result)
                 elif event == "calibration_error":
                     self.progress.stop()
                     self._operation_in_progress = False
@@ -2373,6 +2421,21 @@ class CalibrationApp(ttk.Frame):
                     )
                     messagebox.showerror(
                         "Calibration failed", str(payload), parent=self
+                    )
+                elif event == "missing_pose_guess":
+                    messagebox.showwarning(
+                        "Camera 2 pose estimate recommended",
+                        (
+                            "The camera 2 pose estimate is currently set to "
+                            "all zeros. Before trying calibration again, please "
+                            "enter an approximate position and orientation for "
+                            "camera 2 and select 'Approximate pose + ICP'.\n\n"
+                            "A rough estimate is sufficient; it should indicate "
+                            "where camera 2 is located relative to the base and "
+                            "the direction in which it is looking. The pose is "
+                            "not used while 'FPFH global + ICP' is selected."
+                        ),
+                        parent=self,
                     )
                 elif event == "viewer_error":
                     messagebox.showerror(
