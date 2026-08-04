@@ -46,6 +46,21 @@ A small shared patch may align closely while most of the source cloud has no
 correspondence. Improve the common crop and scene geometry instead of simply
 lowering the acceptance threshold.
 
+## Consensus registration reports instability
+
+An instability error means the independently generated RANSAC, FGR, and
+optional seeded-ICP candidates did not support one unique pose cluster. The
+tool deliberately refuses to export a transform when equally supported but
+incompatible explanations remain.
+
+Improve shared non-planar geometry or enter a rough camera 2 XYZ/RPY pose and
+rerun **Automatic pose-guided (consensus)**. The guess only needs to be roughly
+correct—typically within tens of centimetres and tens of degrees—because it is
+used as a soft plausibility tiebreaker between clusters, not as a mandatory
+high-precision seed. If instability persists, inspect the individual clouds
+for repeated or symmetric structures and do not lower acceptance thresholds
+merely to force a result.
+
 ## The overlay looks convincing but the transform is wrong
 
 Repeated geometry, planar scenes, symmetry, and limited overlap can create an

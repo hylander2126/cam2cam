@@ -23,7 +23,12 @@ from .realsense import (
     list_devices,
     realsense_link_to_depth_optical,
 )
-from .registration import RegistrationConfig, RegistrationResult, calibrate
+from .registration import (
+    RegistrationConfig,
+    RegistrationResult,
+    calibrate,
+    calibrate_consensus,
+)
 from .transforms import (
     load_transform,
     matrix_from_translation_euler,
@@ -445,7 +450,9 @@ class CalibrationApp(ttk.Frame):
         self.voxel_var = tk.StringVar(value="0.008")
         self.global_voxel_var = tk.StringVar(value="0.025")
         self.refinement_var = tk.StringVar(value="point_to_plane")
-        self.registration_mode_var = tk.StringVar(value="FPFH global + ICP")
+        self.registration_mode_var = tk.StringVar(
+            value="Automatic pose-guided (consensus)"
+        )
         self.warmup_var = tk.StringVar(value="30")
         self.accumulate_var = tk.StringVar(value="3")
         self.cam1_min_depth_var = tk.StringVar(value="0.10")
@@ -925,19 +932,23 @@ class CalibrationApp(ttk.Frame):
         mode_combo = ttk.Combobox(
             pose,
             textvariable=self.registration_mode_var,
-            values=("FPFH global + ICP", "Approximate pose + ICP"),
+            values=(
+                "FPFH global + ICP",
+                "Approximate pose + ICP",
+                "Automatic pose-guided (consensus)",
+            ),
             state="readonly",
-            width=24,
+            width=36,
         )
         mode_combo.grid(row=0, column=1, columnspan=2, sticky="w", padx=(8, 0))
         mode_combo.bind(
             "<<ComboboxSelected>>", self._update_registration_mode_controls
         )
         mode_tip = (
-            "FPFH searches broadly and is the safest default when the pose is "
-            "unknown. Approximate pose + ICP is faster but needs a close guess.\n\n"
-            "If calibration fails: verify cloud overlap, improve the pose, or "
-            "switch back to FPFH global + ICP."
+            "Automatic consensus is the recommended default. It refines multiple "
+            "RANSAC/FGR candidates, groups recurring poses, and uses a rough guess "
+            "as an optional tiebreaker.\n\nFPFH runs one unconstrained global "
+            "search. Approximate pose + ICP is faster but needs a close guess."
         )
         _Tooltip(mode_label, mode_tip)
         _Tooltip(mode_combo, mode_tip)
@@ -946,7 +957,8 @@ class CalibrationApp(ttk.Frame):
         xyz_label.grid(row=1, column=0, sticky="w", pady=(12, 0))
         xyz_tip = (
             "Camera 2 body/link position in the base frame, in meters. These "
-            "values seed Approximate pose + ICP and always drive the 3-D preview.\n\n"
+            "values seed Approximate pose + ICP, guide automatic consensus, and "
+            "always drive the 3-D preview.\n\n"
             "If calibration fails: estimate the physical camera separation; "
             "even a rough position can prevent convergence on the wrong surface."
         )
@@ -1074,15 +1086,23 @@ class CalibrationApp(ttk.Frame):
         self, _event: object | None = None
     ) -> None:
         """Show whether the rough pose participates in the selected solver."""
-        uses_guess = self.registration_mode_var.get() == "Approximate pose + ICP"
+        mode = self.registration_mode_var.get()
+        uses_guess = mode != "FPFH global + ICP"
         state = "normal" if uses_guess else "disabled"
         for entry in self.initial_pose_entries:
             entry.configure(state=state)
-        if uses_guess:
+        if mode == "Approximate pose + ICP":
             self.pose_mode_note.configure(
                 text=(
                     "The XYZ/RPY values are used as the initial camera 2 pose "
                     "for multiscale ICP."
+                )
+            )
+        elif mode == "Automatic pose-guided (consensus)":
+            self.pose_mode_note.configure(
+                text=(
+                    "The optional rough pose adds a seeded candidate and softly "
+                    "favors nearby recurring pose clusters."
                 )
             )
         else:
@@ -1715,7 +1735,11 @@ class CalibrationApp(ttk.Frame):
                 global_voxel_size=float(self.global_voxel_var.get()),
                 refinement=self.refinement_var.get(),  # type: ignore[arg-type]
             )
-            use_global = self.registration_mode_var.get() == "FPFH global + ICP"
+            registration_mode = self.registration_mode_var.get()
+            use_global = registration_mode == "FPFH global + ICP"
+            use_consensus = (
+                registration_mode == "Automatic pose-guided (consensus)"
+            )
             guess_values = [
                 float(variable.get()) for variable in self.initial_pose_vars
             ]
@@ -1826,17 +1850,32 @@ class CalibrationApp(ttk.Frame):
                     initial = (
                         np.linalg.inv(T_base_cloud1) @ T_base_cloud2_guess
                     )
-                result = calibrate(
-                    pcd_cam1,
-                    pcd_cam2,
-                    config=config,
-                    return_result=True,
-                    progress_callback=lambda message: self._events.put(
-                        ("status", message)
-                    ),
-                    initial_transform=initial,
-                    use_global_registration=use_global,
-                )
+                if use_consensus:
+                    result = calibrate_consensus(
+                        pcd_cam1,
+                        pcd_cam2,
+                        config=config,
+                        guess=(
+                            None
+                            if np.allclose(guess_values, 0.0)
+                            else initial
+                        ),
+                        progress_callback=lambda message: self._events.put(
+                            ("status", message)
+                        ),
+                    )
+                else:
+                    result = calibrate(
+                        pcd_cam1,
+                        pcd_cam2,
+                        config=config,
+                        return_result=True,
+                        progress_callback=lambda message: self._events.put(
+                            ("status", message)
+                        ),
+                        initial_transform=initial,
+                        use_global_registration=use_global,
+                    )
                 assert isinstance(result, RegistrationResult)
                 T_base_cloud2 = (
                     T_base_cloud1 @ result.transformation
@@ -1864,7 +1903,10 @@ class CalibrationApp(ttk.Frame):
             except Exception as error:
                 LOGGER.exception("Recalculation failed")
                 self._events.put(("calibration_error", error))
-                if np.allclose(guess_values, 0.0):
+                if (
+                    np.allclose(guess_values, 0.0)
+                    and registration_mode != "FPFH global + ICP"
+                ):
                     self._events.put(("missing_pose_guess", None))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -2429,7 +2471,8 @@ class CalibrationApp(ttk.Frame):
                             "The camera 2 pose estimate is currently set to "
                             "all zeros. Before trying calibration again, please "
                             "enter an approximate position and orientation for "
-                            "camera 2 and select 'Approximate pose + ICP'.\n\n"
+                            "camera 2, then use 'Approximate pose + ICP' or "
+                            "the automatic consensus mode.\n\n"
                             "A rough estimate is sufficient; it should indicate "
                             "where camera 2 is located relative to the base and "
                             "the direction in which it is looking. The pose is "

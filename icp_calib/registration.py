@@ -14,6 +14,7 @@ from .filters import prepare_point_cloud
 
 LOGGER = logging.getLogger(__name__)
 RefinementMethod = Literal["point_to_plane", "colored"]
+_CONSENSUS_RANSAC_ATTEMPTS = 4
 
 
 class RegistrationError(RuntimeError):
@@ -39,6 +40,9 @@ class RegistrationConfig:
     min_geometry_ratio: float = 1.0e-4
     max_seed_translation_deviation_m: float = 0.25
     max_seed_rotation_deviation_deg: float = 45.0
+    consensus_translation_tol_m: float = 0.02
+    consensus_rotation_tol_deg: float = 5.0
+    consensus_min_candidates: int = 2
     refinement: RefinementMethod = "point_to_plane"
 
     def __post_init__(self) -> None:
@@ -52,6 +56,8 @@ class RegistrationConfig:
             "min_geometry_ratio",
             "max_seed_translation_deviation_m",
             "max_seed_rotation_deviation_deg",
+            "consensus_translation_tol_m",
+            "consensus_rotation_tol_deg",
         ):
             value = getattr(self, name)
             if not np.isfinite(value) or value <= 0:
@@ -63,6 +69,8 @@ class RegistrationConfig:
             raise ValueError("global_voxel_size must be finite and positive")
         if self.min_points < 4:
             raise ValueError("min_points must be at least 4")
+        if self.consensus_min_candidates < 1:
+            raise ValueError("consensus_min_candidates must be at least 1")
         if self.ransac_iterations < 1 or self.icp_iterations < 1:
             raise ValueError("iteration counts must be positive")
         if not 0 < self.ransac_confidence <= 1:
@@ -84,6 +92,57 @@ class RegistrationResult:
     inlier_rmse: float
     source_points: int
     target_points: int
+
+
+@dataclass(frozen=True)
+class Candidate:
+    """A refined pose hypothesis scored at a shared physical tolerance."""
+
+    transformation: np.ndarray
+    source_label: str
+    bidirectional_fitness: float
+    bidirectional_rmse: float
+
+
+def _pose_delta(T_a: np.ndarray, T_b: np.ndarray) -> tuple[float, float]:
+    """Return translation and rotation separating two homogeneous poses."""
+    a = np.asarray(T_a, dtype=np.float64)
+    b = np.asarray(T_b, dtype=np.float64)
+    if a.shape != (4, 4) or b.shape != (4, 4):
+        raise ValueError("poses must be 4x4 matrices")
+    if not np.all(np.isfinite(a)) or not np.all(np.isfinite(b)):
+        raise ValueError("poses must contain only finite values")
+    delta = np.linalg.inv(a) @ b
+    translation_delta = float(np.linalg.norm(delta[:3, 3]))
+    rotation_cosine = np.clip(
+        (np.trace(delta[:3, :3]) - 1.0) / 2.0, -1.0, 1.0
+    )
+    rotation_delta_deg = float(np.rad2deg(np.arccos(rotation_cosine)))
+    return translation_delta, rotation_delta_deg
+
+
+def score_candidate(
+    source: o3d.geometry.PointCloud,
+    target: o3d.geometry.PointCloud,
+    transformation: np.ndarray,
+    eval_distance: float,
+) -> tuple[float, float]:
+    """Score both registration directions at one caller-supplied tolerance."""
+    if not np.isfinite(eval_distance) or eval_distance <= 0:
+        raise ValueError("eval_distance must be finite and positive")
+    transform = np.asarray(transformation, dtype=np.float64)
+    if transform.shape != (4, 4) or not np.all(np.isfinite(transform)):
+        raise ValueError("transformation must be a finite 4x4 matrix")
+    forward = o3d.pipelines.registration.evaluate_registration(
+        source, target, eval_distance, transform
+    )
+    backward = o3d.pipelines.registration.evaluate_registration(
+        target, source, eval_distance, np.linalg.inv(transform)
+    )
+    return (
+        min(float(forward.fitness), float(backward.fitness)),
+        max(float(forward.inlier_rmse), float(backward.inlier_rmse)),
+    )
 
 
 def _check_cloud(
@@ -378,6 +437,255 @@ def multiscale_refine_registration(
     return result
 
 
+def generate_candidates(
+    pcd_cam2: o3d.geometry.PointCloud,
+    pcd_cam1: o3d.geometry.PointCloud,
+    config: RegistrationConfig,
+    guess: np.ndarray | None = None,
+    progress_callback: Callable[[str], None] | None = None,
+) -> list[Candidate]:
+    """Generate independently initialized poses and score them uniformly."""
+    global_voxel = config.global_voxel_size or config.voxel_size
+    global_cfg = replace(
+        config, voxel_size=global_voxel, global_voxel_size=None
+    )
+    source_down, source_fpfh = _preprocess_for_fpfh(
+        pcd_cam2, "source", global_cfg
+    )
+    target_down, target_fpfh = _preprocess_for_fpfh(
+        pcd_cam1, "target", global_cfg
+    )
+    threshold = global_voxel * config.ransac_distance_factor
+    initial_poses: list[tuple[str, np.ndarray]] = []
+
+    for index in range(_CONSENSUS_RANSAC_ATTEMPTS):
+        if progress_callback:
+            progress_callback(
+                "Generating global RANSAC candidate "
+                f"{index + 1} of {_CONSENSUS_RANSAC_ATTEMPTS}…"
+            )
+        # Open3D exposes no seed argument on this registration call. Separate
+        # back-to-back calls advance its random state and can find different
+        # local optima in an ambiguous scene.
+        result = (
+            o3d.pipelines.registration.registration_ransac_based_on_feature_matching(
+                source_down,
+                target_down,
+                source_fpfh,
+                target_fpfh,
+                mutual_filter=True,
+                max_correspondence_distance=threshold,
+                estimation_method=(
+                    o3d.pipelines.registration.TransformationEstimationPointToPoint(
+                        with_scaling=False
+                    )
+                ),
+                ransac_n=3,
+                checkers=[
+                    o3d.pipelines.registration.CorrespondenceCheckerBasedOnEdgeLength(
+                        0.9
+                    ),
+                    o3d.pipelines.registration.CorrespondenceCheckerBasedOnDistance(
+                        threshold
+                    ),
+                ],
+                criteria=o3d.pipelines.registration.RANSACConvergenceCriteria(
+                    config.ransac_iterations, config.ransac_confidence
+                ),
+            )
+        )
+        if np.all(np.isfinite(result.transformation)) and result.fitness > 0:
+            initial_poses.append(
+                (f"ransac_seed{index}", np.asarray(result.transformation).copy())
+            )
+
+    if progress_callback:
+        progress_callback("Generating Fast Global Registration candidate…")
+    fgr = o3d.pipelines.registration.registration_fgr_based_on_feature_matching(
+        source_down,
+        target_down,
+        source_fpfh,
+        target_fpfh,
+        o3d.pipelines.registration.FastGlobalRegistrationOption(
+            maximum_correspondence_distance=threshold
+        ),
+    )
+    if np.all(np.isfinite(fgr.transformation)) and fgr.fitness > 0:
+        initial_poses.append(("fgr", np.asarray(fgr.transformation).copy()))
+    if guess is not None:
+        initial_poses.append(
+            ("seeded_icp", np.asarray(guess, dtype=np.float64).copy())
+        )
+
+    eval_distance = config.voxel_size * config.icp_distance_factor
+    candidates: list[Candidate] = []
+    errors: list[str] = []
+    for label, initial in initial_poses:
+        try:
+            if progress_callback:
+                progress_callback(f"Refining consensus candidate '{label}'…")
+            refined = multiscale_refine_registration(
+                pcd_cam2,
+                pcd_cam1,
+                initial,
+                config,
+                progress_callback,
+            )
+            fitness, rmse = score_candidate(
+                pcd_cam2,
+                pcd_cam1,
+                refined.transformation,
+                eval_distance,
+            )
+            candidates.append(
+                Candidate(
+                    transformation=np.asarray(refined.transformation).copy(),
+                    source_label=label,
+                    bidirectional_fitness=fitness,
+                    bidirectional_rmse=rmse,
+                )
+            )
+        except Exception as error:
+            LOGGER.warning("Consensus candidate %s failed: %s", label, error)
+            errors.append(f"{label}: {error}")
+    if not candidates:
+        detail = "; ".join(errors) if errors else "no valid global hypotheses"
+        raise RegistrationError(f"Consensus generated no usable candidates: {detail}")
+    return candidates
+
+
+def cluster_candidates(
+    candidates: list[Candidate],
+    translation_tol_m: float,
+    rotation_tol_deg: float,
+) -> list[list[Candidate]]:
+    """Greedily group pose hypotheses around each cluster's first member."""
+    if not np.isfinite(translation_tol_m) or translation_tol_m <= 0:
+        raise ValueError("translation_tol_m must be finite and positive")
+    if not np.isfinite(rotation_tol_deg) or rotation_tol_deg <= 0:
+        raise ValueError("rotation_tol_deg must be finite and positive")
+    clusters: list[list[Candidate]] = []
+    for candidate in candidates:
+        for cluster in clusters:
+            translation, rotation = _pose_delta(
+                cluster[0].transformation, candidate.transformation
+            )
+            if (
+                translation <= translation_tol_m
+                and rotation <= rotation_tol_deg
+            ):
+                cluster.append(candidate)
+                break
+        else:
+            clusters.append([candidate])
+    return clusters
+
+
+def select_consensus_pose(
+    clusters: list[list[Candidate]],
+    config: RegistrationConfig,
+    guess: np.ndarray | None = None,
+) -> Candidate:
+    """Select a uniquely recurring, plausible pose cluster."""
+    if not clusters or any(not cluster for cluster in clusters):
+        raise RegistrationError("Consensus produced no non-empty pose clusters")
+
+    ranked: list[tuple[bool, int, float, list[Candidate]]] = []
+    for cluster in clusters:
+        plausible = True
+        if guess is not None:
+            translation, rotation = _pose_delta(
+                guess, cluster[0].transformation
+            )
+            plausible = (
+                translation <= config.max_seed_translation_deviation_m
+                and rotation <= config.max_seed_rotation_deviation_deg
+            )
+        ranked.append(
+            (
+                plausible,
+                len(cluster),
+                min(candidate.bidirectional_rmse for candidate in cluster),
+                cluster,
+            )
+        )
+    ranked.sort(key=lambda item: (-int(item[0]), -item[1], item[2]))
+    if len(ranked) > 1 and ranked[0][:2] == ranked[1][:2]:
+        raise RegistrationError(
+            "Consensus registration is unstable: the two leading pose clusters "
+            f"have equal plausibility and support ({ranked[0][1]} candidates "
+            "each). Supply a rough camera 2 pose or improve scene geometry."
+        )
+    plausible, cluster_size, _cluster_rmse, winning_cluster = ranked[0]
+    if cluster_size < config.consensus_min_candidates:
+        raise RegistrationError(
+            "Consensus registration is unstable: the winning pose cluster has "
+            f"only {cluster_size} candidate(s), but "
+            f"{config.consensus_min_candidates} are required."
+        )
+    if guess is not None and not plausible:
+        raise RegistrationError(
+            "Consensus registration found no pose cluster within the configured "
+            "translation and rotation limits of the rough camera 2 pose."
+        )
+    return min(
+        winning_cluster,
+        key=lambda candidate: (
+            -candidate.bidirectional_fitness,
+            candidate.bidirectional_rmse,
+        ),
+    )
+
+
+def calibrate_consensus(
+    pcd_cam1: o3d.geometry.PointCloud,
+    pcd_cam2: o3d.geometry.PointCloud,
+    config: RegistrationConfig | None = None,
+    guess: np.ndarray | None = None,
+    progress_callback: Callable[[str], None] | None = None,
+) -> RegistrationResult:
+    """Calibrate from a uniquely recurring cluster of refined candidates."""
+    cfg = config or RegistrationConfig()
+    candidates = generate_candidates(
+        pcd_cam2, pcd_cam1, cfg, guess, progress_callback
+    )
+    clusters = cluster_candidates(
+        candidates,
+        cfg.consensus_translation_tol_m,
+        cfg.consensus_rotation_tol_deg,
+    )
+    winner = select_consensus_pose(clusters, cfg, guess)
+    max_rmse = cfg.voxel_size * cfg.max_rmse_factor
+    if (
+        winner.bidirectional_fitness < cfg.min_fitness
+        or winner.bidirectional_rmse > max_rmse
+    ):
+        raise RegistrationError(
+            "Consensus pose failed quality checks at the fixed evaluation "
+            f"distance: fitness={winner.bidirectional_fitness:.3f} "
+            f"(minimum {cfg.min_fitness:.3f}), "
+            f"RMSE={winner.bidirectional_rmse:.6f} "
+            f"(maximum {max_rmse:.6f})."
+        )
+    if progress_callback:
+        progress_callback(
+            f"Consensus selected '{winner.source_label}' from "
+            f"{len(candidates)} candidates across {len(clusters)} clusters."
+        )
+    # Candidate does not retain raw global-stage diagnostics; these fields use
+    # its fixed-tolerance bidirectional score so RegistrationResult stays API-
+    # compatible with existing GUI/export consumers.
+    return RegistrationResult(
+        transformation=np.asarray(winner.transformation).copy(),
+        global_fitness=winner.bidirectional_fitness,
+        global_inlier_rmse=winner.bidirectional_rmse,
+        fitness=winner.bidirectional_fitness,
+        inlier_rmse=winner.bidirectional_rmse,
+        source_points=len(pcd_cam2.points),
+        target_points=len(pcd_cam1.points),
+    )
+
+
 def calibrate(
     pcd_cam1: o3d.geometry.PointCloud,
     pcd_cam2: o3d.geometry.PointCloud,
@@ -451,13 +759,8 @@ def calibrate(
             "geometry."
         )
     if initial_transform is not None and not use_global_registration:
-        seed_delta = np.linalg.inv(initial) @ refined.transformation
-        translation_delta = float(np.linalg.norm(seed_delta[:3, 3]))
-        rotation_cosine = np.clip(
-            (np.trace(seed_delta[:3, :3]) - 1.0) / 2.0, -1.0, 1.0
-        )
-        rotation_delta_deg = float(
-            np.rad2deg(np.arccos(rotation_cosine))
+        translation_delta, rotation_delta_deg = _pose_delta(
+            initial, refined.transformation
         )
         if (
             translation_delta > cfg.max_seed_translation_deviation_m

@@ -73,7 +73,7 @@ Then:
 
 ### Registration modes and the camera 2 guess
 
-The two GUI registration modes use different initializations:
+The GUI registration modes use different initializations:
 
 - **FPFH global + ICP** ignores the camera 2 XYZ/RPY guess. It matches FPFH
   geometry descriptors, uses randomized RANSAC to obtain an unconstrained
@@ -85,6 +85,12 @@ The two GUI registration modes use different initializations:
   camera 2 pose into the camera-cloud frames and uses that transform to seed
   multiscale ICP. A rough estimate should describe both where camera 2 is
   located relative to the base and the direction in which it is looking.
+- **Automatic pose-guided (consensus)** generates independent RANSAC and FGR
+  candidates plus a seeded-ICP candidate when a rough pose is supplied. It
+  refines and scores every candidate at the same fixed tolerance, groups
+  similar poses, and accepts only a uniquely supported cluster. The rough pose
+  is optional and acts as a soft plausibility tiebreaker. This is the GUI
+  default and recommended mode.
 
 FPFH/RANSAC is randomized, so repeated global runs on the same captured clouds
 can produce different candidates when the scene is ambiguous. A log entry such
@@ -93,6 +99,65 @@ the calibration can still be rejected later if fine ICP does not meet the
 final fitness and RMSE checks. The fitness values from different ICP scales are
 not directly comparable because their voxel sizes and correspondence radii
 differ.
+
+### What automatic consensus does
+
+Automatic consensus is a reliability layer around the existing solvers:
+
+1. Generate four independent FPFH/RANSAC poses and one FGR pose.
+2. Add a seeded multiscale-ICP pose when the user supplies a rough guess.
+3. Refine every hypothesis through the same multiscale ICP pipeline.
+4. Evaluate both cloud directions at one fixed correspondence distance.
+5. Cluster transforms that agree within `0.02 m` and `5°`.
+6. Prefer clusters compatible with the optional guess, then rank by recurrence.
+7. Refuse to export when equally supported incompatible clusters remain or
+   fewer than two candidates support the winning pose.
+
+This prevents a loose solver radius from winning merely because it inflates
+fitness, and prevents one stochastic global-registration result from being
+treated as trustworthy without independent support. It cannot resolve a
+genuinely symmetric scene when neither geometry nor the rough pose
+distinguishes the alternatives.
+
+### Accuracy expectations and validation
+
+One development capture from a D435/D405 pair was evaluated against independent
+base-to-camera transforms. Five consensus runs without a pose guess all selected
+the same physical basin. They differed from the composed reference by
+`2.3–3.4 cm` in translation and `1.8–2.3°` in rotation. Supplying the reference
+as the rough pose produced a `2.26 cm`, `1.80°` difference with `2.73 mm`
+bidirectional inlier RMSE.
+
+These figures describe one test arrangement, not a general accuracy guarantee.
+An error around `2.26 cm` is useful for coarse scene alignment and camera
+placement verification, but it is not high-precision hand-eye calibration.
+Applications involving close robot interaction, accurate picking, metrology,
+or safety margins should independently validate the result and normally target
+sub-centimetre—or task-specific tighter—error.
+
+A low millimetric inlier RMSE does not contradict a centimetric pose error. ICP
+can align one shared or weakly constrained surface very closely while the full
+six-degree-of-freedom camera pose remains biased. The reference transform also
+has its own uncertainty, so report disagreement with the reference rather than
+assuming either estimate is exact.
+
+For better accuracy, in approximate order of impact:
+
+- Capture abundant shared, non-planar geometry distributed across the complete
+  field of view and at several depths; avoid a dominant plane or symmetry.
+- Crop both clouds to the same physical volume. Unmatched foreground and
+  background reduce overlap and can bias ICP.
+- Keep cameras and the scene rigid, minimize time between frames, accumulate
+  clean depth frames, and reject flying pixels or reflective surfaces.
+- Supply a measured rough pose so consensus can eliminate physically wrong
+  global clusters and include a seeded candidate.
+- Validate RealSense depth scale and intrinsics at the actual working range.
+- Combine several independent scene/capture pairs in a joint or robust
+  multi-view estimate instead of relying on one pair. This is not yet
+  implemented by the GUI.
+- For precision robotics, validate or refine with a calibrated target and
+  multiple viewpoints; targetless single-scene ICP should not be the sole
+  metrology source.
 
 Direct capture currently supports Intel RealSense cameras through
 `pyrealsense2`. Stop ROS camera drivers or other programs that already own the
@@ -162,7 +227,7 @@ See [ROS 2 setup](docs/ros2_setup.md) for the short end-to-end workflow.
 import numpy as np
 import open3d as o3d
 
-from icp_calib import RegistrationConfig, calibrate
+from icp_calib import RegistrationConfig, calibrate, calibrate_consensus
 
 pcd_camera1 = o3d.io.read_point_cloud("camera_1_workspace.ply")
 pcd_camera2 = o3d.io.read_point_cloud("camera_2_workspace.ply")
@@ -188,6 +253,10 @@ print(result.fitness, result.inlier_rmse)
 
 By default, `calibrate()` returns a NumPy transform matrix. Pass
 `return_result=True` to also receive registration metrics and point counts.
+For the additive reliability pipeline used by the GUI default, call
+`calibrate_consensus(pcd_camera1, pcd_camera2, config, guess=optional_guess)`;
+it always returns a `RegistrationResult` and raises `RegistrationError` rather
+than choosing between equally supported incompatible pose clusters.
 
 ## Features
 

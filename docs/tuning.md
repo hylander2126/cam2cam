@@ -44,6 +44,34 @@ XYZ/RPY pose and start multiscale ICP from that seed. Seed-deviation checks
 reduce, but do not eliminate, the possibility of convergence to an incorrect
 local minimum.
 
+## Automatic pose-guided consensus
+
+Use **Automatic pose-guided (consensus)** when a single FPFH/RANSAC run is not
+repeatable or the scene contains symmetric or repeated geometry. This mode
+generates four independent RANSAC hypotheses, an FGR hypothesis, and—when a
+rough camera 2 pose is entered—a seeded multiscale-ICP hypothesis. It refines
+all candidates identically, scores both cloud directions at one fixed physical
+tolerance, and accepts only a uniquely supported pose cluster.
+
+The pose guess is optional and does not need to be an accurate ICP seed. An
+estimate within tens of centimetres and tens of degrees is useful because it
+acts as a soft plausibility tiebreaker between recurring pose clusters. With no
+guess, selection uses recurrence and fixed-tolerance registration quality
+alone.
+
+Consensus controls currently use these API defaults:
+
+| Setting | Default | Meaning |
+|---|---:|---|
+| `consensus_translation_tol_m` | `0.02 m` | Maximum translation separation within one pose cluster |
+| `consensus_rotation_tol_deg` | `5°` | Maximum rotation separation within one pose cluster |
+| `consensus_min_candidates` | `2` | Minimum independently generated candidates supporting the accepted cluster |
+
+Do not compare raw fitness values obtained with different correspondence
+radii. A looser radius can increase fitness without improving the pose; the
+consensus scorer therefore uses the same finest-stage evaluation distance for
+every candidate.
+
 ## Interpreting metrics
 
 - **Fitness** describes how much of the source cloud finds corresponding
