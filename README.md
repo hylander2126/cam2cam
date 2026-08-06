@@ -16,9 +16,9 @@ To make depth/stereo cameras useful, one often has to accurately locate it in 3D
 `cam2cam` estimates camera 2's pose relative to an already-calibrated camera 1 by registering their point clouds. It uses Open3D, FPFH descriptors, global RANSAC (with Fast Global Registration as a fallback), and multiscale
 point-to-plane or colored ICP. It does not require a calibration board, GPU, Torch, or a learned model.
 
-![Why cam2cam?](img/main_illustration.png)
+![Why cam2cam?](docs/img/main_illustration.png)
 
-![cam2cam aligns two overlapping RGB-D views to estimate the new camera pose](img/cam2cam_pipeline.svg)
+![cam2cam aligns two overlapping RGB-D views to estimate the new camera pose](docs/img/cam2cam_pipeline.svg)
 
 Under the hood, the tool:
 
@@ -59,7 +59,7 @@ Launch the GUI:
 ```bash
 python3 -m icp_calib.gui
 ```
-![GUI](img/gui.png)
+![GUI](docs/img/gui.png)
 
 Then:
 
@@ -181,7 +181,7 @@ the geometry is explicitly moved into another sensor stream.
 <table>
   <tr>
     <td align="center">
-      <img src="img/initial_cam1.png" alt="Camera 1 original RGB-D view" width="480">
+      <img src="docs/img/initial_cam1.png" alt="Camera 1 original RGB-D view" width="480">
       <br>
       <em>Camera 1 original RGB-D view</em>
     </td>
